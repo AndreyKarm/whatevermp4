@@ -11,6 +11,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"liotom/movie-server/internal/auth"
+	"liotom/movie-server/internal/db"
 )
 
 func loadRootEnv() {
@@ -26,14 +27,20 @@ func loadRootEnv() {
 func main() {
 	loadRootEnv()
 
-	db, err := auth.InitDB(os.Getenv("DATABASE_URL"))
+	dbURL := os.Getenv("DATABASE_URL")
+
+	if err := db.RunMigrations(dbURL); err != nil {
+		log.Fatalf("migrations failed: %v", err)
+	}
+
+	pool, err := auth.InitDB(dbURL)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer db.Close()
+	defer pool.Close()
 
 	secret := []byte(os.Getenv("AUTH_JWT_SECRET"))
-	repo := auth.NewRepository(db)
+	repo := auth.NewRepository(pool)
 	authHandler := auth.NewHandler(repo, secret)
 
 	r := chi.NewRouter()

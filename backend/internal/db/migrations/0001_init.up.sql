@@ -1,8 +1,17 @@
+-- 0001_init.up.sql
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE TYPE user_role AS ENUM ('admin', 'user');
 CREATE TYPE job_stage AS ENUM ('queued', 'downloading', 'transcoding', 'packaging', 'done', 'failed');
 CREATE TYPE source_type AS ENUM ('upload', 'url', 'magnet');
+
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
 -- ==================== AUTH ====================
 
@@ -10,11 +19,16 @@ CREATE TABLE users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
-  display_name TEXT,
+  username TEXT NOT NULL,
+  avatar_key TEXT,
   role user_role NOT NULL DEFAULT 'user',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX users_username_lower_idx ON users (lower(username));
+
+CREATE TRIGGER trg_users_updated_at BEFORE UPDATE ON users
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 CREATE TABLE sessions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -26,7 +40,6 @@ CREATE TABLE sessions (
   revoked_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
 CREATE INDEX idx_sessions_user_id ON sessions (user_id);
 CREATE INDEX idx_sessions_expires_at ON sessions (expires_at);
 
@@ -42,6 +55,8 @@ CREATE TABLE movies (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TRIGGER trg_movies_updated_at BEFORE UPDATE ON movies
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 CREATE TABLE movie_versions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -54,8 +69,9 @@ CREATE TABLE movie_versions (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
 CREATE INDEX idx_movie_versions_movie_id ON movie_versions (movie_id);
+CREATE TRIGGER trg_movie_versions_updated_at BEFORE UPDATE ON movie_versions
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 CREATE TABLE renditions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -65,7 +81,6 @@ CREATE TABLE renditions (
   manifest_key TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
 CREATE INDEX idx_renditions_version_id ON renditions (version_id);
 
 CREATE TABLE subtitles (
@@ -77,7 +92,6 @@ CREATE TABLE subtitles (
   storage_key TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
 CREATE INDEX idx_subtitles_version_id ON subtitles (version_id);
 
 -- ==================== PROCESSING ====================
@@ -91,8 +105,9 @@ CREATE TABLE processing_jobs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
 CREATE INDEX idx_processing_jobs_version_id ON processing_jobs (version_id);
+CREATE TRIGGER trg_processing_jobs_updated_at BEFORE UPDATE ON processing_jobs
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- ==================== WATCH ROOMS ====================
 
@@ -106,6 +121,8 @@ CREATE TABLE rooms (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TRIGGER trg_rooms_updated_at BEFORE UPDATE ON rooms
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 CREATE TABLE room_members (
   room_id UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
@@ -121,24 +138,3 @@ CREATE TABLE watch_progress (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, version_id)
 );
-
--- ==================== TRIGGERS ====================
-
-CREATE OR REPLACE FUNCTION set_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = now();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_users_updated_at BEFORE UPDATE ON users
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-CREATE TRIGGER trg_movies_updated_at BEFORE UPDATE ON movies
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-CREATE TRIGGER trg_movie_versions_updated_at BEFORE UPDATE ON movie_versions
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-CREATE TRIGGER trg_processing_jobs_updated_at BEFORE UPDATE ON processing_jobs
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
-CREATE TRIGGER trg_rooms_updated_at BEFORE UPDATE ON rooms
-  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
