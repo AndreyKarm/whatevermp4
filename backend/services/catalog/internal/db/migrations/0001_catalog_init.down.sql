@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS subtitles;
+DROP TABLE IF EXISTS renditions;
+DROP TABLE IF EXISTS media_versions;
+DROP TABLE IF EXISTS episodes;
+DROP TABLE IF EXISTS seasons;
+DROP TABLE IF EXISTS titles;
+DROP FUNCTION IF EXISTS set_updated_at;
+DROP TYPE IF EXISTS source_type;
+DROP TYPE IF EXISTS job_stage;
+DROP TYPE IF EXISTS title_type;
