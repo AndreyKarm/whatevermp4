@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"log"
 	"net/http"
 	"os"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect/pgdialect"
 
 	"movie-platform/services/catalog/internal/catalog"
 	"movie-platform/services/catalog/internal/db"
@@ -17,21 +20,27 @@ import (
 
 func main() {
 	config.LoadEnv()
+	ctx := context.Background()
 
 	dbURL := os.Getenv("CATALOG_DATABASE_URL")
-	if err := db.RunMigrations(dbURL); err != nil {
-		log.Fatalf("migrations failed: %v", err)
-	}
 
-	pool, err := pgxpool.New(context.Background(), dbURL)
+	sqldb, err := sql.Open("pgx", dbURL)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer pool.Close()
+	bunDB := bun.NewDB(sqldb, pgdialect.New())
+	defer bunDB.Close()
+
+	if err := bunDB.PingContext(ctx); err != nil {
+		log.Fatalf("db ping failed: %v", err)
+	}
+	if err := db.RunMigrations(ctx, bunDB); err != nil {
+		log.Fatalf("migrations failed: %v", err)
+	}
 
 	jwks := authmw.NewJWKSClient(os.Getenv("AUTH_SERVICE_URL") + "/auth/.well-known/jwks.json")
 	internalSecret := []byte(os.Getenv("INTERNAL_SERVICE_SECRET"))
-	repo := catalog.NewRepository(pool)
+	repo := catalog.NewRepository(bunDB)
 	h := catalog.NewHandler(repo)
 
 	r := chi.NewRouter()
