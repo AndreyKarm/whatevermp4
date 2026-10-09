@@ -20,6 +20,7 @@ import (
 
 func main() {
 	config.LoadEnv()
+
 	ctx := context.Background()
 
 	dbURL := os.Getenv("CATALOG_DATABASE_URL")

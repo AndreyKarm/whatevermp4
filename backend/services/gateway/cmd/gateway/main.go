@@ -22,8 +22,8 @@ func mustProxy(target string) *httputil.ReverseProxy {
 }
 
 func mount(r chi.Router, prefix string, proxy *httputil.ReverseProxy) {
-	strip := http.StripPrefix(prefix, proxy)
-	r.Handle(prefix+"/*", strip)
+	// strip := http.StripPrefix(prefix, proxy)
+	r.Handle(prefix+"/*", proxy)
 }
 
 func main() {
@@ -38,11 +38,8 @@ func main() {
 
 	r := chi.NewRouter()
 
-	// Public auth routes (register/login/refresh/logout) pass straight through.
 	mount(r, "/auth", authProxy)
 
-	// Everything else requires a valid access token; per-route role checks
-	// happen inside each downstream service using the same JWT claims.
 	r.Group(func(r chi.Router) {
 		r.Use(authmw.RequireAuth(jwks))
 		mount(r, "/catalog", catalogProxy)

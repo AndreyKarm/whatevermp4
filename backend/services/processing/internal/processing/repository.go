@@ -2,76 +2,77 @@ package processing
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/uptrace/bun"
 )
 
 var ErrNotFound = errors.New("not found")
 
 type Job struct {
-	ID        string  `json:"id"`
-	VersionID string  `json:"versionId"`
-	Stage     string  `json:"stage"`
-	Progress  int16   `json:"progress"`
-	Error     *string `json:"error,omitempty"`
+	bun.BaseModel `bun:"table:processing_jobs,alias:j" json:"-"`
+
+	ID        string  `bun:"id,pk,type:uuid,nullzero,default:gen_random_uuid()" json:"id"`
+	VersionID string  `bun:"version_id,type:uuid,notnull" json:"versionId"`
+	Stage     string  `bun:"stage,notnull" json:"stage"`
+	Progress  int16   `bun:"progress,notnull" json:"progress"`
+	Error     *string `bun:"error" json:"error,omitempty"`
 }
 
 type Repository struct {
-	db *pgxpool.Pool
+	db *bun.DB
 }
 
-func NewRepository(db *pgxpool.Pool) *Repository {
+func NewRepository(db *bun.DB) *Repository {
 	return &Repository{db: db}
 }
 
 func (r *Repository) CreateJob(ctx context.Context, versionID string) (*Job, error) {
 	j := &Job{VersionID: versionID, Stage: "queued"}
-	err := r.db.QueryRow(ctx,
-		`insert into processing_jobs (version_id) values ($1) returning id`,
-		versionID,
-	).Scan(&j.ID)
-	if err != nil {
+	if _, err := r.db.NewInsert().Model(j).Returning("id").Exec(ctx); err != nil {
 		return nil, err
 	}
 	return j, nil
 }
 
 func (r *Repository) GetJob(ctx context.Context, id string) (*Job, error) {
-	var j Job
-	err := r.db.QueryRow(ctx,
-		`select id, version_id, stage, progress, error from processing_jobs where id = $1`, id,
-	).Scan(&j.ID, &j.VersionID, &j.Stage, &j.Progress, &j.Error)
+	j := new(Job)
+	err := r.db.NewSelect().Model(j).Where("j.id = ?", id).Scan(ctx)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	return &j, nil
+	return j, nil
 }
 
 func (r *Repository) UpdateStage(ctx context.Context, id, stage string, progress int16, jobErr *string) error {
-	_, err := r.db.Exec(ctx,
-		`update processing_jobs set stage = $1, progress = $2, error = $3, updated_at = now() where id = $4`,
-		stage, progress, jobErr, id,
-	)
+	_, err := r.db.NewUpdate().
+		Model((*Job)(nil)).
+		Set("stage = ?", stage).
+		Set("progress = ?", progress).
+		Set("error = ?", jobErr).
+		Where("id = ?", id).
+		Exec(ctx)
 	return err
 }
 
 // NextQueuedJob picks up the oldest queued job for a worker to process.
 func (r *Repository) NextQueuedJob(ctx context.Context) (*Job, error) {
-	var j Job
-	err := r.db.QueryRow(ctx,
-		`select id, version_id, stage, progress, error from processing_jobs
-		 where stage = 'queued' order by created_at asc limit 1`,
-	).Scan(&j.ID, &j.VersionID, &j.Stage, &j.Progress, &j.Error)
+	j := new(Job)
+	err := r.db.NewSelect().
+		Model(j).
+		Where("j.stage = ?", "queued").
+		OrderExpr("j.created_at ASC").
+		Limit(1).
+		Scan(ctx)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	return &j, nil
+	return j, nil
 }

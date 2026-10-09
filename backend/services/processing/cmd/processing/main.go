@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/dialect/pgdialect"
+	"github.com/uptrace/bun/driver/pgdriver"
 
 	"movie-platform/services/processing/internal/db"
 	"movie-platform/services/processing/internal/processing"
@@ -20,24 +23,22 @@ import (
 func main() {
 	config.LoadEnv()
 
+	ctx := context.Background()
+
 	dbURL := os.Getenv("PROCESSING_DATABASE_URL")
-	if err := db.RunMigrations(dbURL); err != nil {
+	sqldb := sql.OpenDB(pgdriver.NewConnector(pgdriver.WithDSN(dbURL)))
+	bunDB := bun.NewDB(sqldb, pgdialect.New())
+	defer bunDB.Close()
+
+	if err := db.RunMigrations(ctx, bunDB); err != nil {
 		log.Fatalf("migrations failed: %v", err)
 	}
 
-	pool, err := pgxpool.New(context.Background(), dbURL)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer pool.Close()
-
 	jwks := authmw.NewJWKSClient(os.Getenv("AUTH_SERVICE_URL") + "/auth/.well-known/jwks.json")
 	internalSecret := []byte(os.Getenv("INTERNAL_SERVICE_SECRET"))
-	repo := processing.NewRepository(pool)
+	repo := processing.NewRepository(bunDB)
 
 	worker := processing.NewWorker(repo, internalSecret)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	go worker.Run(ctx)
 
 	r := chi.NewRouter()
@@ -56,6 +57,7 @@ func main() {
 			}
 			job, err := repo.CreateJob(r.Context(), body.VersionID)
 			if err != nil {
+				log.Printf("create job: %v", err)
 				httpx.Error(w, http.StatusInternalServerError, "failed to create job")
 				return
 			}
