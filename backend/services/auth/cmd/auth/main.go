@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -16,16 +17,19 @@ import (
 func main() {
 	config.LoadEnv()
 
-	dbURL := os.Getenv("AUTH_DATABASE_URL")
-	if err := db.RunMigrations(dbURL); err != nil {
-		log.Fatalf("migrations failed: %v", err)
-	}
+	ctx := context.Background()
 
-	pool, err := auth.InitDB(dbURL)
+	dbURL := os.Getenv("AUTH_DATABASE_URL")
+
+	bunDB, err := auth.InitDB(dbURL)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer pool.Close()
+	defer bunDB.Close()
+
+	if err := db.RunMigrations(ctx, bunDB); err != nil {
+		log.Fatalf("migrations failed: %v", err)
+	}
 
 	keys, err := auth.LoadOrGenerateKeyPair()
 	if err != nil {
@@ -34,14 +38,13 @@ func main() {
 
 	jwks := authmw.NewJWKSClient(os.Getenv("AUTH_SERVICE_URL") + "/auth/.well-known/jwks.json")
 
-	repo := auth.NewRepository(pool)
+	repo := auth.NewRepository(bunDB)
 	h := auth.NewHandler(repo, keys)
 
 	r := chi.NewRouter()
 
 	r.Get("/auth/.well-known/jwks.json", h.JWKS)
 
-	r.Patch("/auth/me", h.UpdateProfile)
 	r.Post("/auth/register", h.Register)
 	r.Post("/auth/login", h.Login)
 	r.Post("/auth/refresh", h.Refresh)
@@ -50,6 +53,7 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(authmw.RequireAuth(jwks))
 		r.Get("/auth/me", h.Me)
+		r.Patch("/auth/me", h.UpdateProfile)
 
 		r.Group(func(r chi.Router) {
 			r.Use(authmw.RequireRole("admin"))

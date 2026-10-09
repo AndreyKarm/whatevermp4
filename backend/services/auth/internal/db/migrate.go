@@ -1,26 +1,27 @@
 package db
 
 import (
+	"context"
 	"embed"
 
-	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/postgres"
-	"github.com/golang-migrate/migrate/v4/source/iofs"
+	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/migrate"
 )
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-func RunMigrations(dbURL string) error {
-	src, err := iofs.New(migrationsFS, "migrations")
-	if err != nil {
+func RunMigrations(ctx context.Context, db *bun.DB) error {
+	migrations := migrate.NewMigrations()
+	if err := migrations.Discover(migrationsFS); err != nil {
 		return err
 	}
-	m, err := migrate.NewWithSourceInstance("iofs", src, dbURL)
-	if err != nil {
+
+	m := migrate.NewMigrator(db, migrations)
+	if err := m.Init(ctx); err != nil {
 		return err
 	}
-	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+	if _, err := m.Migrate(ctx); err != nil {
 		return err
 	}
 	return nil

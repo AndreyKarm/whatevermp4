@@ -2,14 +2,12 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"errors"
-	"fmt"
-	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/uptrace/bun"
+	"github.com/uptrace/bun/driver/pgdriver"
 )
 
 var (
@@ -19,137 +17,176 @@ var (
 )
 
 type User struct {
-	ID           string
-	Email        string
-	PasswordHash string
-	Role         string
-	Username     *string
-	AvatarKey    *string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	bun.BaseModel `bun:"table:users,alias:u"`
+
+	ID           string    `bun:"id,pk,type:uuid,nullzero,default:gen_random_uuid()"`
+	Email        string    `bun:"email,notnull"`
+	PasswordHash string    `bun:"password_hash,notnull"`
+	Role         string    `bun:"role,notnull,default:'user'"`
+	Username     *string   `bun:"username"`
+	AvatarKey    *string   `bun:"avatar_key"`
+	CreatedAt    time.Time `bun:"created_at,nullzero,notnull,default:now()"`
+	UpdatedAt    time.Time `bun:"updated_at,nullzero,notnull,default:now()"`
+}
+
+type Session struct {
+	bun.BaseModel `bun:"table:sessions,alias:s"`
+
+	ID               string     `bun:"id,pk,type:uuid,nullzero,default:gen_random_uuid()"`
+	UserID           string     `bun:"user_id,type:uuid,notnull"`
+	RefreshTokenHash string     `bun:"refresh_token_hash,notnull"`
+	UserAgent        string     `bun:"user_agent"`
+	IPAddress        string     `bun:"ip_address"`
+	ExpiresAt        time.Time  `bun:"expires_at,notnull"`
+	RevokedAt        *time.Time `bun:"revoked_at"`
+	CreatedAt        time.Time  `bun:"created_at,nullzero,notnull,default:now()"`
 }
 
 type Repository struct {
-	db *pgxpool.Pool
+	db *bun.DB
 }
 
-func NewRepository(db *pgxpool.Pool) *Repository {
+func NewRepository(db *bun.DB) *Repository {
 	return &Repository{db: db}
 }
 
-func (r *Repository) CreateUser(ctx context.Context, email, username, hash string) (*User, error) {
-	u := &User{Email: email, Username: &username, PasswordHash: hash, Role: "user"}
+// mapUniqueViolation translates Postgres unique violations (23505) into
+// domain errors. Returns the original error if it isn't one we know.
+func mapUniqueViolation(err error) error {
+	var pgErr pgdriver.Error
+	if errors.As(err, &pgErr) && pgErr.Field('C') == "23505" {
+		switch pgErr.Field('n') { // constraint / index name
+		case "users_email_key":
+			return ErrEmailTaken
+		case "users_username_lower_idx":
+			return ErrUsernameTaken
+		}
+	}
+	return err
+}
 
-	err := r.db.QueryRow(ctx,
-		`insert into users (email, username, password_hash, role)
-		 values ($1, $2, $3, $4)
-		 returning id, created_at, updated_at`,
-		email, username, hash, u.Role,
-	).Scan(&u.ID, &u.CreatedAt, &u.UpdatedAt)
+func (r *Repository) CreateUser(ctx context.Context, email, username, hash string) (*User, error) {
+	u := &User{
+		Email:        email,
+		Username:     &username,
+		PasswordHash: hash,
+		Role:         "user",
+	}
+
+	_, err := r.db.NewInsert().
+		Model(u).
+		Returning("id, created_at, updated_at").
+		Exec(ctx)
 	if err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			switch pgErr.ConstraintName {
-			case "users_email_key":
-				return nil, ErrEmailTaken
-			case "users_username_key":
-				return nil, ErrUsernameTaken
-			}
+		return nil, mapUniqueViolation(err)
+	}
+	return u, nil
+}
+
+func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*User, error) {
+	u := new(User)
+	err := r.db.NewSelect().
+		Model(u).
+		Where("email = ?", email).
+		Limit(1).
+		Scan(ctx)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
 		}
 		return nil, err
 	}
 	return u, nil
 }
 
-func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*User, error) {
-	var u User
-	err := r.db.QueryRow(ctx,
-		`select id, email, password_hash, role from users where email = $1`, email,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	return &u, nil
-}
-
 func (r *Repository) GetUserByID(ctx context.Context, id string) (*User, error) {
-	var u User
-	err := r.db.QueryRow(ctx,
-		`select id, email, password_hash, role, username, avatar_key, created_at, updated_at
-		 from users where id = $1`, id,
-	).Scan(&u.ID, &u.Email, &u.PasswordHash, &u.Role, &u.Username, &u.AvatarKey, &u.CreatedAt, &u.UpdatedAt)
+	u := new(User)
+	err := r.db.NewSelect().
+		Model(u).
+		Where("id = ?", id).
+		Limit(1).
+		Scan(ctx)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	return &u, nil
+	return u, nil
 }
 
 func (r *Repository) UpdateProfile(ctx context.Context, id string, username, avatarKey *string) error {
-	sets := []string{}
-	args := []any{}
-	i := 1
+	q := r.db.NewUpdate().
+		Model((*User)(nil)).
+		Set("updated_at = now()").
+		Where("id = ?", id)
 
 	if username != nil {
-		sets = append(sets, fmt.Sprintf("username = $%d", i))
-		args = append(args, *username)
-		i++
+		q = q.Set("username = ?", *username)
 	}
 	if avatarKey != nil {
-		sets = append(sets, fmt.Sprintf("avatar_key = $%d", i))
-		args = append(args, *avatarKey)
-		i++
+		q = q.Set("avatar_key = ?", *avatarKey)
 	}
-	sets = append(sets, "updated_at = now()")
 
-	query := fmt.Sprintf("update users set %s where id = $%d", strings.Join(sets, ", "), i)
-	args = append(args, id)
-
-	_, err := r.db.Exec(ctx, query, args...)
-	return err
+	_, err := q.Exec(ctx)
+	return mapUniqueViolation(err)
 }
 
 func (r *Repository) UpdateUserRole(ctx context.Context, id, role string) error {
-	_, err := r.db.Exec(ctx,
-		`update users set role = $1, updated_at = now() where id = $2`, role, id)
+	_, err := r.db.NewUpdate().
+		Model((*User)(nil)).
+		Set("role = ?", role).
+		Set("updated_at = now()").
+		Where("id = ?", id).
+		Exec(ctx)
 	return err
 }
 
 func (r *Repository) CreateSession(ctx context.Context, userID, refreshHash, userAgent, ip string) error {
-	_, err := r.db.Exec(ctx,
-		`insert into sessions (user_id, refresh_token_hash, user_agent, ip_address, expires_at)
-		 values ($1, $2, $3, $4, $5)`,
-		userID, refreshHash, userAgent, ip, time.Now().Add(RefreshTokenTTL),
-	)
+	s := &Session{
+		UserID:           userID,
+		RefreshTokenHash: refreshHash,
+		UserAgent:        userAgent,
+		IPAddress:        ip,
+		ExpiresAt:        time.Now().Add(RefreshTokenTTL),
+	}
+	_, err := r.db.NewInsert().Model(s).Exec(ctx)
 	return err
 }
 
 func (r *Repository) GetSessionByHash(ctx context.Context, hash string) (userID string, sessionID string, err error) {
-	err = r.db.QueryRow(ctx,
-		`select user_id, id from sessions
-		 where refresh_token_hash = $1 and revoked_at is null and expires_at > now()`,
-		hash,
-	).Scan(&userID, &sessionID)
+	s := new(Session)
+	err = r.db.NewSelect().
+		Model(s).
+		Column("id", "user_id").
+		Where("refresh_token_hash = ?", hash).
+		Where("revoked_at IS NULL").
+		Where("expires_at > now()").
+		Limit(1).
+		Scan(ctx)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return "", "", ErrNotFound
 		}
 		return "", "", err
 	}
-	return userID, sessionID, nil
+	return s.UserID, s.ID, nil
 }
 
 func (r *Repository) RevokeSession(ctx context.Context, sessionID string) error {
-	_, err := r.db.Exec(ctx, `update sessions set revoked_at = now() where id = $1`, sessionID)
+	_, err := r.db.NewUpdate().
+		Model((*Session)(nil)).
+		Set("revoked_at = now()").
+		Where("id = ?", sessionID).
+		Exec(ctx)
 	return err
 }
 
 func (r *Repository) RevokeSessionByHash(ctx context.Context, hash string) error {
-	_, err := r.db.Exec(ctx, `update sessions set revoked_at = now() where refresh_token_hash = $1`, hash)
+	_, err := r.db.NewUpdate().
+		Model((*Session)(nil)).
+		Set("revoked_at = now()").
+		Where("refresh_token_hash = ?", hash).
+		Exec(ctx)
 	return err
 }
