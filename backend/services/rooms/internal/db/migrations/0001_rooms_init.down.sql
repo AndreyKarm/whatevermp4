@@ -1,4 +1,0 @@
-DROP TABLE IF EXISTS watch_progress;
-DROP TABLE IF EXISTS room_members;
-DROP TABLE IF EXISTS rooms;
-DROP FUNCTION IF EXISTS set_updated_at;
