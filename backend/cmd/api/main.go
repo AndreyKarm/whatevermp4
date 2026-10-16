@@ -31,11 +31,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	verifier, err := auth.NewVerifier(ctx, cfg.JWKSURL, cfg.JWTIssuer, cfg.JWTAudience)
-	if err != nil {
-		log.Fatal(err)
-	}
 
+	verifier := auth.NewVerifier(pool)
 	hub := rooms.NewHub(pool)
 	go hub.Run(ctx)
 

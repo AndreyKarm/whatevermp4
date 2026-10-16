@@ -2,12 +2,11 @@ package auth
 
 import (
 	"context"
-	"fmt"
-	"time"
+	"errors"
+	"net/url"
+	"strings"
 
-	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jws"
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type User struct {
@@ -17,34 +16,52 @@ type User struct {
 }
 
 type Verifier struct {
-	cache         *jwk.Cache
-	url, iss, aud string
+	db *pgxpool.Pool
 }
 
-func NewVerifier(ctx context.Context, jwksURL, issuer, audience string) (*Verifier, error) {
-	c := jwk.NewCache(ctx)
-	if err := c.Register(jwksURL, jwk.WithMinRefreshInterval(15*time.Minute)); err != nil {
-		return nil, err
-	}
-	// Don't hard-fail at startup if the web app isn't up yet; it's fetched lazily.
-	return &Verifier{cache: c, url: jwksURL, iss: issuer, aud: audience}, nil
+func NewVerifier(db *pgxpool.Pool) *Verifier {
+	return &Verifier{db: db}
 }
 
-func (v *Verifier) Verify(ctx context.Context, token string) (User, error) {
-	set, err := v.cache.Get(ctx, v.url)
-	if err != nil {
-		return User{}, fmt.Errorf("jwks: %w", err)
+func (v *Verifier) Verify(ctx context.Context, rawToken string) (User, error) {
+	rawToken = strings.TrimSpace(rawToken)
+	if rawToken == "" {
+		return User{}, errors.New("empty token")
 	}
-	tok, err := jwt.Parse([]byte(token),
-		jwt.WithKeySet(set, jws.WithInferAlgorithmFromKey(true)),
-		jwt.WithIssuer(v.iss),
-		jwt.WithAudience(v.aud),
-		jwt.WithValidate(true),
-	)
+	if unescaped, err := url.QueryUnescape(rawToken); err == nil {
+		rawToken = unescaped
+	}
+	// BetterAuth signed cookies have the format "<session_token>.<hmac_sig>".
+	// The database stores the raw <session_token> part before the dot.
+	token, _, _ := strings.Cut(rawToken, ".")
+	if token == "" {
+		return User{}, errors.New("invalid token")
+	}
+
+	var u User
+	err := v.db.QueryRow(ctx, `
+		SELECT u.id, u.name, COALESCE(u.image, '')
+		FROM "session" s
+		JOIN "user" u ON u.id = s.user_id
+		WHERE s.token = $1 AND s.expires_at > now()`,
+		token,
+	).Scan(&u.ID, &u.Name, &u.Image)
 	if err != nil {
 		return User{}, err
 	}
-	claims := tok.PrivateClaims()
-	str := func(k string) string { s, _ := claims[k].(string); return s }
-	return User{ID: tok.Subject(), Name: str("name"), Image: str("image")}, nil
+	return u, nil
+}
+
+// ExtractToken checks "Authorization: Bearer <token>", "?token=", and BetterAuth cookies.
+func ExtractToken(headerAuth, queryToken string, cookies func(string) string) string {
+	if tok, ok := strings.CutPrefix(headerAuth, "Bearer "); ok && tok != "" {
+		return tok
+	}
+	if queryToken != "" {
+		return queryToken
+	}
+	if c := cookies("__Secure-better-auth.session_token"); c != "" {
+		return c
+	}
+	return cookies("better-auth.session_token")
 }

@@ -10,7 +10,6 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// Browsers can't set headers on WebSocket, so the JWT comes in ?token=.
 func Handler(h *Hub, v *auth.Verifier, origins []string) http.HandlerFunc {
 	var patterns []string
 	for _, o := range origins {
@@ -19,7 +18,17 @@ func Handler(h *Hub, v *auth.Verifier, origins []string) http.HandlerFunc {
 		}
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		user, err := v.Verify(r.Context(), r.URL.Query().Get("token"))
+		tok := auth.ExtractToken(
+			r.Header.Get("Authorization"),
+			r.URL.Query().Get("token"),
+			func(name string) string {
+				if c, err := r.Cookie(name); err == nil {
+					return c.Value
+				}
+				return ""
+			},
+		)
+		user, err := v.Verify(r.Context(), tok)
 		if err != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return

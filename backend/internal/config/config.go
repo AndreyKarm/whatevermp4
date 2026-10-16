@@ -15,9 +15,6 @@ type Config struct {
 	S3AccessKey      string
 	S3SecretKey      string
 	S3Bucket         string
-	JWKSURL          string // http://web:3000/api/auth/jwks
-	JWTIssuer        string // BetterAuth baseURL
-	JWTAudience      string // BetterAuth baseURL by default
 	WorkDir          string
 	AllowedOrigins   []string
 	PlaybackSecret   string
@@ -55,9 +52,6 @@ func Load() Config {
 		S3AccessKey:      get("S3_ACCESS_KEY", ""),
 		S3SecretKey:      get("S3_SECRET_KEY", ""),
 		S3Bucket:         get("S3_BUCKET", "media"),
-		JWKSURL:          get("JWKS_URL", "http://localhost:5173/api/auth/jwks"),
-		JWTIssuer:        get("JWT_ISSUER", "http://localhost:5173"),
-		JWTAudience:      get("JWT_AUDIENCE", "http://localhost:5173"),
 		WorkDir:          get("WORK_DIR", "/tmp/work"),
 		AllowedOrigins:   splitCSV(get("ALLOWED_ORIGINS", "http://localhost:5173")),
 		PlaybackSecret:   get("PLAYBACK_SECRET", "change-me"),
