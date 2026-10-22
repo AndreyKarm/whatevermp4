@@ -28,7 +28,7 @@ frontend/            SvelteKit 3 + Svelte 5 (runes) + Tailwind 4, adapter-node, 
     room.svelte.ts   RoomSocket: WebSocket client, reconnect, server clock offset, target position, canControl
     upload.svelte.ts S3Uploader: browser → S3 multipart upload via presigned URLs, with progress
     types.ts         API response types and RoomIn/RoomOut WS messages (mirror the Go structs)
-    components/      Player.svelte (hls.js, drift correction, host controls, subtitles), Uploader.svelte, Torrents.svelte
+    components/      Player.svelte (hls.js, drift correction, host controls, subtitles), Uploader.svelte, UrlImport.svelte, Torrents.svelte
     server/db/       drizzle schema.ts (source of truth for the DB schema) and client
   src/routes/        / (library, rooms, torrents), /rooms/[id] (player, members, chat, host settings)
 ```
@@ -37,6 +37,7 @@ frontend/            SvelteKit 3 + Svelte 5 (runes) + Tailwind 4, adapter-node, 
 
 - **Upload:** `POST /api/uploads/init` creates a `media_files` row (`uploading`) and presigned part URLs. The browser PUTs 64 MB parts straight to S3, then `POST /api/uploads/{id}/complete` finishes the upload, sets `processing` and enqueues a `process` job.
 - **Torrent:** `POST /api/torrents` stores a magnet link or base64 metainfo and enqueues a `torrent` job. The worker downloads only the video files (skipping "sample"), uploads each one to `raw/{id}/…`, inserts `media_files` rows and enqueues a `process` job for each.
+- **Link import:** `POST /api/imports` (`url`, optional `name`, `referer`) creates a `media_files` row (`downloading`) and enqueues an `import` job. The worker remuxes the `.m3u8` stream into MKV with `ffmpeg -c copy` (network protocols only, via `-protocol_whitelist`), uploads it as the raw file and enqueues `process`. Master playlists use ffmpeg's default stream pick (best video plus one audio).
 - **Process:** the worker downloads the raw file, then runs `ffprobe` → `BuildPlan` → `ffmpeg`. It copies H.264 8-bit video and AAC ≤2ch audio as is and re-encodes everything else. It writes `hls/{id}/master.m3u8`, segments, `subs/*.vtt|.ass`, `fonts/` and `poster.jpg`, then marks the media `ready`.
 - **Playback:** media responses include `playbackUrl` = `/play/{hmacToken}/{id}` (12h TTL, signed with `PLAYBACK_SECRET`). The client appends `/master.m3u8`, and the API proxies the files from S3 with Range support.
 - **Rooms:** the WebSocket is at `/api/rooms/{id}/ws?nickname=…`. Client → server: `play|pause|seek|rate|change_media|buffering|chat|ping`. Server → client: `state|members|chat|pong|error` (see `rooms/messages.go`). The server is authoritative: position = `position + (now - updatedAt) * rate` while playing. If any member is buffering, the room pauses and sets `holding`. Only the owner (matched by nickname) can control playback unless `everyone_controls` is on. The hub writes dirty state to `rooms.state` every 10s and evicts empty rooms.
@@ -91,11 +92,11 @@ Other scripts: `pnpm build`, `pnpm check` (svelte-check), `pnpm lint` (prettier 
 - Use raw SQL through `pgxpool`, with no ORM. Column names are snake_case and must match `frontend/src/lib/server/db/schema.ts`.
 - Handlers are methods on `httpapi.Server`. Respond with `writeJSON` / `writeErr` (`{"error": "..."}`); mutations without a body return `204`.
 - JSON fields are camelCase. Optional columns are pointer fields with `omitempty`. JSONB columns use `json.RawMessage` in API structs.
-- PATCH handlers take pointer fields and use `COALESCE($n, col)`.
+- PATCH handlers take pointer fields and use `COALESCE($n, col)`. When "omitted" and "null" must differ, use `optInt` (see `PATCH /api/media/{id}`, which also re-parses season/episode from a new filename).
 - IDs are `uuid.NewString()` stored as `text`. The only exception is `jobs.id`, which is a bigserial.
 - The caller's identity is `nickname(r)`, which URI-decodes the `X-Nickname` header and passes it through `rooms.CleanNickname` (trimmed, at most 32 runes, default "Anonymous"). Nothing is authenticated. Room settings and deletion check the nickname against `owner_name` (`requireRoomOwner`).
 - When a handler changes a room that may be loaded in the hub, update the hub too (`Hub.SetEveryoneControls`, `Hub.Remove`). The hub otherwise keeps its own copy until the room is evicted.
-- Status strings: media `uploading|processing|ready|failed`, torrent `queued|downloading|importing|done|failed|cancelled`, job `queued|running|done|failed`.
+- Status strings: media `uploading|downloading|processing|ready|failed`, torrent `queued|downloading|importing|done|failed|cancelled`, job `queued|running|done|failed`.
 - S3 key layout: `raw/{mediaId}/{SafeName(filename)}` for originals and `hls/{mediaId}/…` for transcoded output.
 - Long-running work belongs in the worker as a job type, not in a request handler.
 - Lock in `rooms`: methods ending in `Locked` expect `Room.mu` to be held.

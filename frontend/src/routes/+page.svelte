@@ -3,11 +3,12 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { PUBLIC_API_URL } from '$app/env/public';
-	import { Film, Play, Trash2 } from '@lucide/svelte';
+	import { Film, Pencil, Play, Trash2 } from '@lucide/svelte';
 	import { apiFetch, apiPost } from '#lib/api.ts';
 	import type { MediaItem, MediaStatus, RoomItem, TorrentItem } from '#lib/types.ts';
 	import Uploader from '#lib/components/Uploader.svelte';
 	import Torrents from '#lib/components/Torrents.svelte';
+	import UrlImport from '#lib/components/UrlImport.svelte';
 
 	let media: MediaItem[] = $state([]);
 	let rooms: RoomItem[] = $state([]);
@@ -18,6 +19,7 @@
 		ready: 'text-primary',
 		processing: 'text-warn',
 		uploading: 'text-gray-400',
+		downloading: 'text-warn',
 		failed: 'text-accent'
 	};
 
@@ -53,6 +55,23 @@
 		}
 	}
 
+	// Separate state so the 5s poll doesn't overwrite what is being typed.
+	let renaming = $state<{ id: string; value: string } | null>(null);
+
+	async function saveRename() {
+		if (!renaming) return;
+		const { id, value } = renaming;
+		renaming = null;
+		const filename = value.trim();
+		if (!filename || filename === media.find((m) => m.id === id)?.filename) return;
+		try {
+			await apiFetch(`/api/media/${id}`, { method: 'PATCH', body: JSON.stringify({ filename }) });
+			await load();
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		}
+	}
+
 	async function remove(item: MediaItem) {
 		if (!confirm(`Delete "${item.filename}"?`)) return;
 		try {
@@ -68,7 +87,9 @@
 	<div class="flex flex-col justify-between gap-4 md:flex-row md:items-end">
 		<div>
 			<h1 class="section-title">Library</h1>
-			<p class="text-sm text-muted">Upload a video or add a torrent, then watch it together.</p>
+			<p class="text-sm text-muted">
+				Upload a video, paste an .m3u8 link or add a torrent, then watch it together.
+			</p>
 		</div>
 		<Uploader onuploaded={load} />
 	</div>
@@ -98,12 +119,34 @@
 					</div>
 
 					<div class="flex min-w-0 flex-1 flex-col justify-between gap-2">
-						<h3
-							class="line-clamp-2 text-xs leading-snug font-bold break-all uppercase"
-							title={item.filename}
-						>
-							{item.filename}
-						</h3>
+						{#if renaming?.id === item.id}
+							<form
+								onsubmit={(e) => {
+									e.preventDefault();
+									saveRename();
+								}}
+							>
+								<input
+									class="input w-full px-2 py-1 text-xs"
+									maxlength="255"
+									aria-label="New name"
+									bind:value={renaming.value}
+									onkeydown={(e) => e.key === 'Escape' && (renaming = null)}
+									onblur={() => (renaming = null)}
+									{@attach (el) => {
+										el.focus();
+										el.select();
+									}}
+								/>
+							</form>
+						{:else}
+							<h3
+								class="line-clamp-2 text-xs leading-snug font-bold break-all uppercase"
+								title={item.filename}
+							>
+								{item.filename}
+							</h3>
+						{/if}
 						{#if item.error}
 							<p class="truncate text-xs text-accent" title={item.error}>{item.error}</p>
 						{/if}
@@ -113,6 +156,13 @@
 								<span class="truncate normal-case">by {item.uploadedBy}</span>
 							</div>
 							<div class="flex items-center gap-1">
+								<button
+									class="btn-icon text-gray-500"
+									title="Rename"
+									onclick={() => (renaming = { id: item.id, value: item.filename })}
+								>
+									<Pencil size={16} />
+								</button>
 								<button
 									class="btn-icon delete text-gray-500"
 									title="Delete"
@@ -153,6 +203,7 @@
 					{/each}
 				</ul>
 			</section>
+			<UrlImport onimported={load} />
 			<Torrents {torrents} onchange={load} />
 		</div>
 	</div>

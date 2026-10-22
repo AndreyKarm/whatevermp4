@@ -56,6 +56,9 @@ func NewRouter(
 		r.Post("/uploads/{id}/presign", s.presignPart)
 		r.Post("/uploads/{id}/complete", s.completeUpload)
 
+		// Remote HLS (.m3u8) imports
+		r.Post("/imports", s.createImport)
+
 		// Torrents
 		r.Get("/torrents", s.listTorrents)
 		r.Post("/torrents", s.createTorrent)

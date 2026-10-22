@@ -3,8 +3,11 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"liotom/whateverserver/internal/storage"
 	"net/http"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -107,6 +110,21 @@ func (s *Server) updateMedia(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
+	}
+	if in.Filename != nil {
+		name := strings.TrimSpace(*in.Filename)
+		if name == "" || utf8.RuneCountInString(name) > 255 {
+			writeErr(w, http.StatusBadRequest, "filename must be 1-255 characters")
+			return
+		}
+		in.Filename = &name
+		// A rename that names an episode updates season/episode too,
+		// unless the caller set them explicitly.
+		if !in.Season.Set && !in.Episode.Set {
+			if season, ep := storage.ParseSE(name); season != nil {
+				in.Season, in.Episode = optInt{true, season}, optInt{true, ep}
+			}
+		}
 	}
 	// season/episode: omitted = unchanged, null = cleared
 	tag, err := s.db.Exec(r.Context(), `

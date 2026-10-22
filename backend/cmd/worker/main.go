@@ -45,7 +45,7 @@ func main() {
 	_, _ = pool.Exec(ctx, `UPDATE jobs SET status='queued' WHERE status='running'`)
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go loop(ctx, &wg, pool, []string{"process"}, func(ctx context.Context, p json.RawMessage) error {
 		var in struct {
 			MediaID string `json:"mediaId"`
@@ -71,6 +71,22 @@ func main() {
 		if err != nil && ctx.Err() == nil {
 			_, _ = pool.Exec(context.Background(),
 				`UPDATE torrents SET status='failed', error=$2 WHERE id=$1`, in.TorrentID, err.Error())
+		}
+		return err
+	})
+	go loop(ctx, &wg, pool, []string{"import"}, func(ctx context.Context, p json.RawMessage) error {
+		var in struct {
+			MediaID string `json:"mediaId"`
+			URL     string `json:"url"`
+			Referer string `json:"referer"`
+		}
+		if err := json.Unmarshal(p, &in); err != nil {
+			return err
+		}
+		err := proc.Import(ctx, in.MediaID, in.URL, in.Referer)
+		if err != nil && ctx.Err() == nil {
+			_, _ = pool.Exec(context.Background(),
+				`UPDATE media_files SET status='failed', error=$2 WHERE id=$1`, in.MediaID, err.Error())
 		}
 		return err
 	})

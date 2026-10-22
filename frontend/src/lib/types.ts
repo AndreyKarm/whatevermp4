@@ -1,4 +1,4 @@
-export type MediaStatus = 'uploading' | 'processing' | 'ready' | 'failed';
+export type MediaStatus = 'uploading' | 'downloading' | 'processing' | 'ready' | 'failed';
 export type TorrentStatus =
 	'queued' | 'downloading' | 'importing' | 'done' | 'failed' | 'cancelled';
 
