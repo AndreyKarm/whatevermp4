@@ -8,6 +8,7 @@
 	import { page } from '$app/state';
 	import type { MediaItem, RoomItem } from '#lib/types.ts';
 	import { resolve } from '$app/paths';
+	import { ArrowLeft, MessageSquare, Trash2, Users } from '@lucide/svelte';
 
 	const roomId = $derived(page.params.id ?? '');
 
@@ -83,18 +84,22 @@
 
 <svelte:head><title>{info?.name ?? 'Watch Party'}</title></svelte:head>
 
-<div class="flex flex-col lg:flex-row h-screen">
-	<div class="flex-1 flex flex-col bg-black min-w-0">
-		<header class="flex items-center gap-4 px-4 py-2 bg-gray-900 text-sm">
-			<a href={resolve('/')} class="text-blue-400">← Library</a>
-			<h1 class="font-bold truncate">{info?.name ?? 'Watch Party'}</h1>
+<div class="flex flex-col gap-6 p-6 lg:h-[calc(100dvh-var(--header-height))] lg:flex-row">
+	<div class="flex min-w-0 flex-1 flex-col gap-4">
+		<div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+			<a href={resolve('/')} class="btn-icon text-gray-400" title="Back to library">
+				<ArrowLeft size={18} />
+			</a>
+			<h1 class="min-w-0 truncate text-lg uppercase">{info?.name ?? 'Watch Party'}</h1>
 			{#if room}
-				<span class="text-gray-400">host: {room.owner || '…'}</span>
-				{#if !room.connected && !room.fatal}<span class="text-yellow-400">reconnecting…</span>{/if}
+				<span class="meta normal-case">host: {room.owner || '…'}</span>
+				{#if !room.connected && !room.fatal}
+					<span class="meta text-warn">reconnecting…</span>
+				{/if}
 			{/if}
 			{#if room?.canControl && library.length}
 				<select
-					class="ml-auto bg-gray-800 rounded p-1 max-w-64"
+					class="input ml-auto max-w-64 py-2"
 					value={mediaId ?? ''}
 					onchange={(e) =>
 						room?.send({ type: 'change_media', mediaId: (e.target as HTMLSelectElement).value })}
@@ -105,61 +110,74 @@
 					{/each}
 				</select>
 			{/if}
-		</header>
+		</div>
 
-		<div class="flex-1 flex items-center justify-center">
+		<div class="flex min-h-0 flex-1 items-center justify-center">
 			{#if room?.fatal}
-				<p class="text-red-400">This room is gone ({room.fatal}).</p>
+				<p class="text-accent">This room is gone ({room.fatal}).</p>
 			{:else if room && mediaItem?.playbackUrl}
 				{#key mediaItem.id}
 					<Player item={mediaItem} {room} apiUrl={PUBLIC_API_URL} />
 				{/key}
 			{:else if mediaItem}
-				<p class="text-gray-500">"{mediaItem.filename}" is {mediaItem.status}.</p>
+				<p class="text-muted">"{mediaItem.filename}" is {mediaItem.status}.</p>
 			{:else}
-				<p class="text-gray-500">No media selected in room.</p>
+				<p class="text-muted">No media selected in room.</p>
 			{/if}
 		</div>
 		{#if room?.error || actionError}
-			<p class="px-4 py-2 bg-red-900/60 text-sm">{room?.error ?? actionError}</p>
+			<p class="rounded-lg border border-accent/40 bg-accent/10 px-4 py-2 text-sm text-accent">
+				{room?.error ?? actionError}
+			</p>
 		{/if}
 	</div>
 
-	<aside class="w-full lg:w-80 bg-gray-800 flex flex-col">
-		<div class="p-4 border-b border-gray-700">
-			<h2 class="font-bold mb-2">Watching ({room?.members.length ?? 0})</h2>
-			<ul class="text-sm space-y-1">
+	<aside class="flex min-h-96 w-full flex-col overflow-hidden rounded-2xl bg-secondary lg:w-80">
+		<div class="border-b border-border p-5">
+			<h2 class="panel-title flex items-center gap-2">
+				<Users size={16} /> Watching ({room?.members.length ?? 0})
+			</h2>
+			<ul class="space-y-1 text-sm">
 				{#each room?.members ?? [] as m, i (i)}
-					<li>
-						{m.name}
-						{#if m.name === room?.owner}<span class="text-xs text-blue-400">host</span>{/if}
-						{#if m.buffering}<span class="text-xs text-yellow-400">buffering</span>{/if}
+					<li class="flex items-center gap-2">
+						<span class="truncate">{m.name}</span>
+						{#if m.name === room?.owner}<span class="badge">host</span>{/if}
+						{#if m.buffering}<span class="meta text-warn">buffering</span>{/if}
 					</li>
 				{/each}
 			</ul>
 			{#if isOwner}
-				<label class="flex items-center gap-2 mt-3 text-sm">
-					<input type="checkbox" checked={room?.everyone} onchange={toggleEveryone} />
+				<label class="mt-4 flex items-center gap-2 text-sm">
+					<input
+						type="checkbox"
+						class="h-4.5 w-4.5"
+						checked={room?.everyone}
+						onchange={toggleEveryone}
+					/>
 					Everyone can control playback
 				</label>
-				<button class="mt-2 text-xs text-red-400" onclick={deleteRoom}>Delete room</button>
+				<button class="btn btn-outline mt-4 w-full" onclick={deleteRoom}>
+					<Trash2 size={14} /> Delete room
+				</button>
 			{/if}
 		</div>
-		<div class="p-4 border-b border-gray-700 font-bold">Chat</div>
-		<div class="flex-1 overflow-y-auto p-4 space-y-2">
+		<h2 class="panel-title flex items-center gap-2 border-b border-border px-5 py-4">
+			<MessageSquare size={16} /> Chat
+		</h2>
+		<div class="flex-1 space-y-2 overflow-y-auto px-5 pb-4">
 			{#each room?.chat ?? [] as msg, i (i)}
-				<div class="text-sm">
-					<span class="text-blue-400 font-bold">{msg.from.name}:</span>
+				<div class="text-sm break-words">
+					<span class="font-bold text-primary">{msg.from.name}:</span>
 					<span>{msg.text}</span>
 				</div>
 			{/each}
 		</div>
-		<div class="p-4 border-t border-gray-700">
+		<div class="border-t border-border p-4">
 			<input
 				type="text"
 				placeholder="Message..."
 				maxlength="500"
-				class="w-full bg-gray-700 p-2 rounded"
+				class="input w-full"
 				onkeydown={(e) => {
 					if (e.key === 'Enter' && room) {
 						const target = e.target as HTMLInputElement;

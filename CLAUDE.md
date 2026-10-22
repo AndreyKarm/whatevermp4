@@ -105,7 +105,8 @@ Other scripts: `pnpm build`, `pnpm check` (svelte-check), `pnpm lint` (prettier 
 - Import from `#lib/...` with explicit `.ts` extensions (e.g. `#lib/api.ts`). Read env through `$app/env/public` / `$app/env/private`, declared in `src/env.ts`.
 - Make all backend calls through `apiFetch` so the nickname header is sent. Build internal links with `resolve()` from `$app/paths`.
 - When a Go JSON struct changes, update `src/lib/types.ts`. When a table changes, update `src/lib/server/db/schema.ts` (the Go code does not define the schema).
-- Style with Tailwind utility classes (dark gray palette). Prettier settings: tabs, single quotes, no trailing commas, width 100.
+- Styling follows the fielv-store look and is defined in `src/routes/app.css`: Montserrat (served from `static/fonts`), dark `bg`/`secondary` surfaces, pink `primary`. Use the theme tokens as Tailwind utilities (`bg-secondary`, `text-primary`, `border-border`, `text-muted`, `text-accent`, `text-warn`) and the component classes (`panel`, `panel-title`, `section-title`, `label`, `input`, `btn btn-primary|btn-outline`, `btn-icon`, `btn-round`, `badge`, `meta`, `progress`, `modal-overlay`/`modal-content`) instead of raw Tailwind palette colors. Icons come from `@lucide/svelte`.
+- Prettier settings: tabs, single quotes, no trailing commas, width 100.
 
 ## Known gaps / gotchas
 

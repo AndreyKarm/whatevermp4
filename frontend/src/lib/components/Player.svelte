@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import Hls from 'hls.js';
+	import { Maximize, Pause, Play, Volume2, VolumeX } from '@lucide/svelte';
 	import type { MediaItem } from '#lib/types.ts';
 	import type { RoomSocket } from '#lib/room.svelte.ts';
 
@@ -117,7 +118,10 @@
 	}
 </script>
 
-<div bind:this={container} class="relative w-full aspect-video bg-black group">
+<div
+	bind:this={container}
+	class="group relative aspect-video max-h-full w-full overflow-hidden rounded-2xl bg-black"
+>
 	<video
 		bind:this={videoEl}
 		bind:currentTime
@@ -139,29 +143,36 @@
 
 	{#if needsGesture}
 		<button
-			class="absolute inset-0 flex items-center justify-center bg-black/60 text-white text-lg"
+			class="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/60 text-sm font-bold uppercase"
 			onclick={resume}
 		>
+			<span class="btn-round h-14 w-14"><Play size={24} fill="currentColor" /></span>
 			Click to join playback
 		</button>
 	{:else if room.isHolding}
 		<div
-			class="absolute inset-0 flex items-center justify-center bg-black/50 text-white pointer-events-none"
+			class="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/50 text-sm font-bold uppercase"
 		>
 			Waiting for everyone to buffer…
 		</div>
 	{/if}
 
 	<div
-		class="absolute bottom-0 inset-x-0 flex items-center gap-3 px-3 py-2 bg-gradient-to-t from-black/80 to-transparent text-white text-sm opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity"
+		class="absolute inset-x-0 bottom-0 flex items-center gap-3 bg-gradient-to-t from-black/90 to-transparent px-4 pt-8 pb-3 text-xs font-semibold opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
 	>
 		{#if room.canControl}
-			<button class="w-14" onclick={togglePlay}>{room.state?.playing ? 'Pause' : 'Play'}</button>
+			<button class="btn-round" title={room.state?.playing ? 'Pause' : 'Play'} onclick={togglePlay}>
+				{#if room.state?.playing}
+					<Pause size={14} fill="currentColor" />
+				{:else}
+					<Play size={14} fill="currentColor" />
+				{/if}
+			</button>
 		{/if}
 		<span class="tabular-nums">{fmt(currentTime)}</span>
 		<input
 			type="range"
-			class="flex-1"
+			class="min-w-0 flex-1"
 			min="0"
 			max={duration || 0}
 			step="0.1"
@@ -172,14 +183,22 @@
 		/>
 		<span class="tabular-nums">{fmt(duration)}</span>
 		{#if room.canControl}
-			<select class="bg-gray-800 rounded" value={room.state?.rate ?? 1} onchange={setRate}>
+			<select
+				class="rounded-md border border-border bg-bg px-1 py-0.5"
+				value={room.state?.rate ?? 1}
+				onchange={setRate}
+			>
 				{#each [0.5, 0.75, 1, 1.25, 1.5, 2] as r (r)}
 					<option value={r}>{r}×</option>
 				{/each}
 			</select>
 		{/if}
-		<button onclick={() => (muted = !muted)}>{muted ? 'Unmute' : 'Mute'}</button>
+		<button class="btn-icon" title={muted ? 'Unmute' : 'Mute'} onclick={() => (muted = !muted)}>
+			{#if muted || volume === 0}<VolumeX size={18} />{:else}<Volume2 size={18} />{/if}
+		</button>
 		<input type="range" class="w-20" min="0" max="1" step="0.05" bind:value={volume} />
-		<button onclick={fullscreen}>Full</button>
+		<button class="btn-icon" title="Fullscreen" onclick={fullscreen}>
+			<Maximize size={18} />
+		</button>
 	</div>
 </div>

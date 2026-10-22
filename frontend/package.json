@@ -43,6 +43,7 @@
 		"#lib/*": "./src/lib/*"
 	},
 	"dependencies": {
+		"@lucide/svelte": "^1.61.0",
 		"@tailwindcss/vite": "^4.3.3",
 		"hls.js": "^1.7.3",
 		"tailwindcss": "^4.3.3"

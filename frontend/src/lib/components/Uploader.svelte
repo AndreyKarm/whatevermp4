@@ -23,9 +23,9 @@
 	}
 </script>
 
-<div class="p-4 rounded bg-gray-800 text-white w-full md:w-80">
-	<label class="block">
-		<span class="block mb-2 text-sm font-semibold">
+<div class="panel w-full p-4 md:w-80">
+	<label class="flex flex-col gap-2">
+		<span class="label">
 			{#if uploader.progress !== null}
 				Uploading… {Math.round(uploader.progress * 100)}%
 			{:else}
@@ -36,14 +36,14 @@
 			type="file"
 			accept="video/*,.mkv"
 			onchange={handleFile}
-			class="block w-full text-sm"
+			class="input w-full"
 			disabled={uploader.progress !== null}
 		/>
 	</label>
 	{#if uploader.progress !== null}
-		<div class="mt-2 h-1 bg-gray-700 rounded">
-			<div class="h-1 bg-blue-500 rounded" style:width="{uploader.progress * 100}%"></div>
+		<div class="progress mt-3">
+			<div style:width="{uploader.progress * 100}%"></div>
 		</div>
 	{/if}
-	{#if error}<p class="mt-2 text-xs text-red-400">{error}</p>{/if}
+	{#if error}<p class="mt-2 text-xs text-accent">{error}</p>{/if}
 </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { X } from '@lucide/svelte';
 	import { apiFetch, apiPost } from '#lib/api.ts';
 	import type { TorrentItem } from '#lib/types.ts';
 
@@ -52,10 +53,10 @@
 	}
 </script>
 
-<section class="bg-gray-800 rounded p-4">
-	<h2 class="font-bold mb-3">Torrents</h2>
+<section class="panel">
+	<h2 class="panel-title">Torrents</h2>
 	<form
-		class="flex gap-2 mb-2"
+		class="mb-3 flex gap-2"
 		onsubmit={(e) => {
 			e.preventDefault();
 			if (magnet.trim()) add({ magnet: magnet.trim() });
@@ -65,39 +66,48 @@
 			type="text"
 			placeholder="magnet:?xt=…"
 			bind:value={magnet}
-			class="flex-1 bg-gray-700 p-2 rounded text-sm"
+			class="input min-w-0 flex-1"
 		/>
-		<button class="bg-blue-600 px-3 rounded text-sm disabled:opacity-50" disabled={busy}>Add</button
-		>
+		<button class="btn btn-primary" disabled={busy}>Add</button>
 	</form>
-	<label class="block text-xs text-gray-400 mb-3">
-		or a .torrent file
-		<input type="file" accept=".torrent" onchange={addFile} disabled={busy} class="text-xs" />
+	<label class="mb-4 flex flex-col gap-2">
+		<span class="label">or a .torrent file</span>
+		<input type="file" accept=".torrent" onchange={addFile} disabled={busy} class="input" />
 	</label>
-	{#if error}<p class="text-xs text-red-400 mb-2">{error}</p>{/if}
+	{#if error}<p class="mb-2 text-xs text-accent">{error}</p>{/if}
 
-	<ul class="space-y-3 text-sm">
+	<ul class="space-y-4 text-sm">
 		{#each torrents as t (t.id)}
 			<li>
 				<div class="flex justify-between gap-2">
-					<span class="truncate">{t.name}</span>
-					<span class="text-xs text-gray-400 shrink-0">{t.status}</span>
+					<span class="truncate text-xs font-bold uppercase" title={t.name}>{t.name}</span>
+					<span
+						class="meta shrink-0"
+						class:text-primary={t.status === 'done'}
+						class:text-accent={t.status === 'failed'}
+					>
+						{t.status}
+					</span>
 				</div>
 				{#if t.status === 'downloading' || t.status === 'queued'}
-					<div class="flex items-center gap-2 mt-1">
-						<div class="flex-1 h-1 bg-gray-700 rounded">
-							<div class="h-1 bg-blue-500 rounded" style:width="{t.progress * 100}%"></div>
+					<div class="mt-2 flex items-center gap-2">
+						<div class="progress flex-1">
+							<div style:width="{t.progress * 100}%"></div>
 						</div>
-						<span class="text-xs text-gray-400">
-							{size(t.bytesDone)} / {size(t.bytesTotal)}
-						</span>
-						<button class="text-xs text-red-400" onclick={() => cancel(t.id)}>Cancel</button>
+						<span class="meta normal-case">{size(t.bytesDone)} / {size(t.bytesTotal)}</span>
+						<button
+							class="btn-icon delete text-gray-500"
+							title="Cancel"
+							onclick={() => cancel(t.id)}
+						>
+							<X size={14} />
+						</button>
 					</div>
 				{/if}
-				{#if t.error}<p class="text-xs text-red-400">{t.error}</p>{/if}
+				{#if t.error}<p class="text-xs text-accent">{t.error}</p>{/if}
 			</li>
 		{:else}
-			<li class="text-gray-500 text-xs">No torrents yet.</li>
+			<li class="text-xs text-muted">No torrents yet.</li>
 		{/each}
 	</ul>
 </section>
