@@ -52,8 +52,9 @@ func (s *Server) listTorrents(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createTorrent(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Magnet   string `json:"magnet"`
-		Metainfo string `json:"metainfo"` // base64-encoded .torrent file
+		Magnet   string  `json:"magnet"`
+		Metainfo string  `json:"metainfo"` // base64-encoded .torrent file
+		FolderID *string `json:"folderId"` // where the imported media go
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
@@ -78,9 +79,13 @@ func (s *Server) createTorrent(w http.ResponseWriter, r *http.Request) {
 
 	id := uuid.NewString()
 	_, err := s.db.Exec(r.Context(), `
-		INSERT INTO torrents (id, added_by, name, magnet, metainfo, status)
-		VALUES ($1, $2, 'Fetching metadata...', $3, $4, 'queued')`,
-		id, nickname(r), magnet, meta)
+		INSERT INTO torrents (id, added_by, name, magnet, metainfo, status, folder_id)
+		VALUES ($1, $2, 'Fetching metadata...', $3, $4, 'queued', $5)`,
+		id, nickname(r), magnet, meta, emptyToNil(in.FolderID))
+	if isForeignKeyViolation(err) {
+		writeErr(w, http.StatusBadRequest, "folder not found")
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

@@ -1,8 +1,15 @@
 <script lang="ts">
 	import { apiPost } from '#lib/api.ts';
 
-	/** Called after the torrent was queued. */
-	let { onadded }: { onadded?: () => void } = $props();
+	let {
+		folderId = null,
+		onadded
+	}: {
+		/** folder the torrent's videos go into */
+		folderId?: string | null;
+		/** Called after the torrent was queued. */
+		onadded?: () => void;
+	} = $props();
 
 	let magnet = $state('');
 	let busy = $state(false);
@@ -12,7 +19,7 @@
 		busy = true;
 		error = null;
 		try {
-			await apiPost('/api/torrents', body);
+			await apiPost('/api/torrents', { ...body, folderId });
 			magnet = '';
 			onadded?.();
 		} catch (err) {

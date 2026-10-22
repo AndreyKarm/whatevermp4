@@ -5,7 +5,18 @@
 	import Torrents from './Torrents.svelte';
 	import UrlImport from './UrlImport.svelte';
 
-	let { open, onclose }: { open: boolean; onclose: () => void } = $props();
+	let {
+		open,
+		onclose,
+		folderId = null,
+		folderLabel = ''
+	}: {
+		open: boolean;
+		onclose: () => void;
+		/** folder new movies go into; null = top level */
+		folderId?: string | null;
+		folderLabel?: string;
+	} = $props();
 
 	type Tab = 'device' | 'torrent' | 'link';
 	let tab = $state<Tab>('device');
@@ -18,6 +29,9 @@
 </script>
 
 <Modal {open} title="Add a movie" width="34rem" {onclose}>
+	{#if folderLabel}
+		<p class="muted">Adding to <b>{folderLabel}</b></p>
+	{/if}
 	<div class="tabs" role="tablist">
 		{#each tabs as t (t.id)}
 			<button
@@ -34,11 +48,11 @@
 
 	<div role="tabpanel">
 		{#if tab === 'device'}
-			<Uploader onstarted={onclose} />
+			<Uploader {folderId} onstarted={onclose} />
 		{:else if tab === 'torrent'}
-			<Torrents onadded={onclose} />
+			<Torrents {folderId} onadded={onclose} />
 		{:else}
-			<UrlImport onadded={onclose} />
+			<UrlImport {folderId} onadded={onclose} />
 		{/if}
 	</div>
 </Modal>

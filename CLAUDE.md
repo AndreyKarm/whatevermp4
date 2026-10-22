@@ -20,20 +20,21 @@ backend/             Go module `liotom/whateverserver`
     transcode/       ffprobe → plan → ffmpeg HLS (fMP4), subtitle/font extraction, poster
     torrent/         anacrolix/torrent downloader that imports video files as media
     storage/         S3 client (multipart presign, get/put, delete prefix), content types, name helpers
-  migrations/        drizzle-kit SQL (0000 schema, 0001 custom NOTIFY triggers); run by postgres initdb on a fresh volume
+  migrations/        drizzle-kit SQL (0000 schema, 0001 NOTIFY triggers, 0002 folders + its trigger); run by postgres initdb on a fresh volume
 frontend/            SvelteKit 3 + Svelte 5 (runes), plain CSS (no Tailwind), adapter-node, pnpm
   src/env.ts         declared env vars (DATABASE_URL, PUBLIC_API_URL)
   src/lib/
     api.ts           apiFetch<T>() / apiPost<T>(): prefix PUBLIC_API_URL, add the X-Nickname header
     events.ts        onChange(topics, fn): shared /api/events socket, debounced refetch callbacks
     progress.ts      per-viewer watch positions in localStorage
+    folders.ts       folder paths, subtrees and select options
     time.ts          formatTime()
     nickname.svelte.ts  nickname state in localStorage, plus a context helper
     room.svelte.ts   RoomSocket: WebSocket client, reconnect, server clock offset, target position, canControl
     upload.svelte.ts `uploader` singleton: browser → S3 multipart upload, progress survives closing the modal
     types.ts         API response types and RoomIn/RoomOut WS messages (mirror the Go structs)
     components/      Modal (<dialog>), Player (hls.js, drift sync, buffer bar, skip, shortcuts, quality, resume),
-                     UploadModal (tabs: Uploader / Torrents / UrlImport), MediaEditModal, Downloads
+                     UploadModal (tabs: Uploader / Torrents / UrlImport), MediaEditModal, FolderModal, Downloads
     server/db/       drizzle schema.ts (source of truth for the DB schema) and client
   src/routes/        / (rooms with live viewers), /library (movies, add/edit modals),
                      /rooms/[id] (player, members, chat, host settings)
@@ -45,6 +46,7 @@ frontend/            SvelteKit 3 + Svelte 5 (runes), plain CSS (no Tailwind), ad
 - **Torrent:** `POST /api/torrents` stores a magnet link or base64 metainfo and enqueues a `torrent` job. The worker downloads only the video files (skipping "sample"), uploads each one to `raw/{id}/…`, inserts `media_files` rows and enqueues a `process` job for each.
 - **Link import:** `POST /api/imports` (`url`, optional `name`, `referer`) creates a `media_files` row (`downloading`) and enqueues an `import` job. The worker remuxes the `.m3u8` stream into MKV with `ffmpeg -c copy` (network protocols only, via `-protocol_whitelist`), uploads it as the raw file and enqueues `process`. Master playlists use ffmpeg's default stream pick (best video plus one audio).
 - **Process:** the worker downloads the raw file, then runs `ffprobe` → `BuildPlan` → `ffmpeg`. It copies H.264 8-bit video and AAC ≤2ch audio as is and re-encodes everything else. It writes `hls/{id}/master.m3u8`, segments, `subs/*.vtt|.ass`, `fonts/` and `poster.jpg`, then marks the media `ready`. Video variants: the source quality (copied when browser-safe) plus up to two lower ladder steps (1080/720/480/360p, `variants()` in `transcode/hls.go`), named `stream_{height}p`. When the source is copied, the encoded ones use `-force_key_frames source` so all variants cut segments at the same times. With one audio track, audio is muxed into every video variant; with several, they are shared alternate renditions. `POST /api/media/{id}/reprocess` re-runs it from the stored original (old output is deleted first); media processed before the ladder existed only gets lower qualities after a re-process.
+- **Folders:** `folders` (id, name, parent_id) nest arbitrarily (a series → seasons → …); `media_files.folder_id` and `torrents.folder_id` point into them (null = top level; a torrent's videos inherit its folder). `/api/folders` lists/creates; `PATCH` renames or moves (refuses cycles via a recursive CTE); `DELETE` moves the folder's subfolders, media and torrents up to its parent and never deletes content. Uploads, imports and torrents accept `folderId`; `PATCH /api/media/{id}` moves media (`folderId: null` = top level). The library shows one folder at a time via `?folder=<id>`, and the frontend builds paths and subtrees itself (`src/lib/folders.ts`).
 - **Download:** `GET /api/media/{id}/download` 302-redirects to a 15-minute presigned S3 link for the original (`raw_key`) with an attachment filename.
 - **Live updates:** triggers on `media_files`, `torrents` and `rooms` (migration 0001) `pg_notify('events', <table>)`. The API LISTENs on its own connection and fans out `{"type": "<table>"}` on the `/api/events` WebSocket; the hub also publishes `rooms` on join/leave/playback changes. Pages refetch on these events and never poll. `GET /api/rooms` merges the hub's live members and state.
 - **Playback:** media responses include `playbackUrl` = `/play/{hmacToken}/{id}` (12h TTL, signed with `PLAYBACK_SECRET`). The client appends `/master.m3u8`, and the API proxies the files from S3 with Range support.
@@ -69,7 +71,7 @@ On a fresh `pgdata` volume, Postgres creates the schema from `backend/migrations
 cd frontend && DATABASE_URL=postgres://movieuser:<pw>@localhost:5432/local pnpm db:push
 ```
 
-After a schema change, also run `pnpm db:generate` (writes to `backend/migrations`) so fresh installs pick it up. `db:push` does not create the NOTIFY triggers; on a database that predates them, run `backend/migrations/0001_notify_triggers.sql` once with psql, or live updates won't fire for worker changes.
+After a schema change, also run `pnpm db:generate` (writes to `backend/migrations`) so fresh installs pick it up. `db:push` does not create the NOTIFY triggers; on a database that predates them, run `backend/migrations/0001_notify_triggers.sql` (and the trigger at the end of `0002_folders.sql`) once with psql, or live updates won't fire. A new table that pages should follow needs its own `*_notify` trigger appended to its migration by hand.
 
 ### Backend locally
 
@@ -117,7 +119,9 @@ Other scripts: `pnpm build`, `pnpm check` (svelte-check), `pnpm lint` (prettier 
 - When a Go JSON struct changes, update `src/lib/types.ts`. When a table changes, update `src/lib/server/db/schema.ts` (the Go code does not define the schema).
 - Plain CSS only, no Tailwind. `src/routes/app.css` holds the fielv-store look: tokens (`--color-primary|secondary|bg|text|accent|border|muted|gray|warn`, `--radius`, `--header-height`), base styles, and shared classes (`container`, `page`, `page-head`, `panel`, `section-title`, `panel-title`, `muted`, `meta`, `error-text`, `badge`, `status-<media status>`, `field`, `label`, `input`, `btn btn-primary|btn-outline|btn-danger`, `btn-icon`, `btn-round`, `progress`, `spinner`). Layout specific to a page or component goes in its scoped `<style>` block, using the tokens rather than raw colors. Fonts are served from `static/fonts`; icons come from `@lucide/svelte`.
 - Don't poll. Refetch on server events with `onChange([...topics], load)` from `#lib/events.ts`, returning its unsubscribe from `onMount`/`$effect`.
-- Modals use `Modal.svelte` (a native `<dialog>`).
+- Modals use `Modal.svelte` (a native `<dialog>`). It focuses the first form field after `showModal()`, so don't autofocus inside modal content yourself (`showModal()` would override it).
+- Browser uploads PUT parts with XHR (not fetch) because only XHR reports upload progress; the `uploader` singleton exposes `progress`, `mediaId` and `size` for the card overlay and the In progress list.
+- Hover highlight on cards is the `--ring` token (solid outline); library cards have none.
 - Prettier settings: tabs, single quotes, no trailing commas, width 100.
 
 ## Known gaps / gotchas

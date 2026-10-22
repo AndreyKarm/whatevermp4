@@ -69,7 +69,6 @@
 				placeholder="Nickname..."
 				value={nickname.name}
 				class="input"
-				{@attach (el) => el.focus()}
 			/>
 		</label>
 		<div class="actions">

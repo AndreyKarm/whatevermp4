@@ -40,7 +40,14 @@
 							uploading {Math.round((uploader.progress ?? 0) * 100)}%
 						</span>
 					</div>
-					<div class="progress"><div style:width="{(uploader.progress ?? 0) * 100}%"></div></div>
+					<div class="row">
+						<div class="progress grow">
+							<div style:width="{(uploader.progress ?? 0) * 100}%"></div>
+						</div>
+						<span class="meta">
+							{size((uploader.progress ?? 0) * uploader.size)} / {size(uploader.size)}
+						</span>
+					</div>
 				</li>
 			{:else if uploader.error}
 				<li>

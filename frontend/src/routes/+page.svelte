@@ -117,7 +117,7 @@
 
 	.room:hover {
 		color: inherit;
-		box-shadow: var(--glow);
+		box-shadow: var(--ring);
 	}
 
 	.thumb {

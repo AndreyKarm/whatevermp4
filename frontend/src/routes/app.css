@@ -57,10 +57,8 @@
 	--header-height: 4.5rem;
 	--radius: 1rem;
 	--radius-sm: 0.5rem;
-	/* hover highlight for cards: thin pink ring plus a soft outer glow */
-	--glow:
-		0 0 0 1px var(--color-primary),
-		0 0 1.5rem color-mix(in srgb, var(--color-primary), transparent 55%);
+	/* hover highlight for cards: a solid pink ring outside the edge, no blur */
+	--ring: 0 0 0 2px var(--color-primary);
 }
 
 /* ---------- Base ---------- */

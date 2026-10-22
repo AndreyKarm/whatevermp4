@@ -58,6 +58,12 @@ func NewRouter(
 		r.Post("/media/{id}/reprocess", s.reprocessMedia)
 		r.Get("/media/{id}/download", s.downloadMedia)
 
+		// Library folders (series, seasons, …)
+		r.Get("/folders", s.listFolders)
+		r.Post("/folders", s.createFolder)
+		r.Patch("/folders/{id}", s.updateFolder)
+		r.Delete("/folders/{id}", s.deleteFolder)
+
 		// Direct S3 multipart uploads
 		r.Post("/uploads/init", s.initUpload)
 		r.Post("/uploads/{id}/presign", s.presignPart)

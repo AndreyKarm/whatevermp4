@@ -55,11 +55,11 @@ func (d *Downloader) cancelled(ctx context.Context, id string) bool {
 
 func (d *Downloader) Run(ctx context.Context, id string) error {
 	var userID string
-	var magnet *string
+	var magnet, folderID *string
 	var meta []byte
 	if err := d.db.QueryRow(ctx,
-		`SELECT added_by, magnet, metainfo FROM torrents WHERE id=$1`, id).
-		Scan(&userID, &magnet, &meta); err != nil {
+		`SELECT added_by, magnet, metainfo, folder_id FROM torrents WHERE id=$1`, id).
+		Scan(&userID, &magnet, &meta, &folderID); err != nil {
 		return err
 	}
 	if d.cancelled(ctx, id) {
@@ -165,9 +165,10 @@ func (d *Downloader) Run(ctx context.Context, id string) error {
 		}
 		s, e := storage.ParseSE(base)
 		if _, err := d.db.Exec(ctx, `
-			INSERT INTO media_files (id, uploaded_by, filename, status, raw_key, season, episode, torrent_id)
-			VALUES ($1,$2,$3,'processing',$4,$5,$6,$7)`,
-			mid, userID, base, key, s, e, id); err != nil {
+			INSERT INTO media_files (id, uploaded_by, filename, status, raw_key, season, episode, torrent_id, folder_id)
+			VALUES ($1,$2,$3,'processing',$4,$5,$6,$7,
+				(SELECT id FROM folders WHERE id = $8))`, // folder may have been deleted meanwhile
+			mid, userID, base, key, s, e, id, folderID); err != nil {
 			return err
 		}
 		if err := jobs.Enqueue(ctx, d.db, "process", map[string]string{"mediaId": mid}); err != nil {

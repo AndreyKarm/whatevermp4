@@ -19,6 +19,7 @@ type MediaItem struct {
 	ID             string          `json:"id"`
 	UploadedBy     string          `json:"uploadedBy"`
 	TorrentID      *string         `json:"torrentId,omitempty"`
+	FolderID       *string         `json:"folderId,omitempty"`
 	Filename       string          `json:"filename"`
 	Status         string          `json:"status"`
 	HLSKey         *string         `json:"hlsKey,omitempty"`
@@ -34,23 +35,32 @@ type MediaItem struct {
 	CreatedAt      time.Time       `json:"createdAt"`
 }
 
-// optInt distinguishes an omitted JSON field (Set=false) from an explicit null.
-type optInt struct {
+// opt distinguishes an omitted JSON field (Set=false) from an explicit null.
+type opt[T any] struct {
 	Set bool
-	V   *int
+	V   *T
 }
 
-func (o *optInt) UnmarshalJSON(b []byte) error {
+func (o *opt[T]) UnmarshalJSON(b []byte) error {
 	o.Set = true
 	return json.Unmarshal(b, &o.V)
 }
 
+const mediaColumns = `id, uploaded_by, torrent_id, folder_id, filename, status, hls_key, poster_key,
+	duration_sec, season, episode, audio_tracks, subtitle_tracks, fonts, error, created_at`
+
+// scan reads a row selected with mediaColumns.
+func (m *MediaItem) scan(row pgx.Row) error {
+	return row.Scan(
+		&m.ID, &m.UploadedBy, &m.TorrentID, &m.FolderID, &m.Filename, &m.Status,
+		&m.HLSKey, &m.PosterKey, &m.DurationSec, &m.Season, &m.Episode,
+		&m.AudioTracks, &m.SubtitleTracks, &m.Fonts, &m.Error, &m.CreatedAt,
+	)
+}
+
 func (s *Server) listMedia(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(r.Context(), `
-		SELECT id, uploaded_by, torrent_id, filename, status, hls_key, poster_key,
-			duration_sec, season, episode, audio_tracks, subtitle_tracks, fonts, error, created_at
-		FROM media_files
-		ORDER BY created_at DESC`)
+	rows, err := s.db.Query(r.Context(),
+		`SELECT `+mediaColumns+` FROM media_files ORDER BY created_at DESC`)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -60,11 +70,7 @@ func (s *Server) listMedia(w http.ResponseWriter, r *http.Request) {
 	items := []MediaItem{}
 	for rows.Next() {
 		var m MediaItem
-		if err := rows.Scan(
-			&m.ID, &m.UploadedBy, &m.TorrentID, &m.Filename, &m.Status,
-			&m.HLSKey, &m.PosterKey, &m.DurationSec, &m.Season, &m.Episode,
-			&m.AudioTracks, &m.SubtitleTracks, &m.Fonts, &m.Error, &m.CreatedAt,
-		); err != nil {
+		if err := m.scan(rows); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -79,14 +85,8 @@ func (s *Server) listMedia(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getMedia(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var m MediaItem
-	err := s.db.QueryRow(r.Context(), `
-		SELECT id, uploaded_by, torrent_id, filename, status, hls_key, poster_key,
-			duration_sec, season, episode, audio_tracks, subtitle_tracks, fonts, error, created_at
-		FROM media_files WHERE id=$1`, id).Scan(
-		&m.ID, &m.UploadedBy, &m.TorrentID, &m.Filename, &m.Status,
-		&m.HLSKey, &m.PosterKey, &m.DurationSec, &m.Season, &m.Episode,
-		&m.AudioTracks, &m.SubtitleTracks, &m.Fonts, &m.Error, &m.CreatedAt,
-	)
+	err := m.scan(s.db.QueryRow(r.Context(),
+		`SELECT `+mediaColumns+` FROM media_files WHERE id=$1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeErr(w, http.StatusNotFound, "media not found")
 		return
@@ -105,13 +105,17 @@ func (s *Server) updateMedia(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 
 	var in struct {
-		Filename *string `json:"filename"`
-		Season   optInt  `json:"season"`
-		Episode  optInt  `json:"episode"`
+		Filename *string     `json:"filename"`
+		Season   opt[int]    `json:"season"`
+		Episode  opt[int]    `json:"episode"`
+		FolderID opt[string] `json:"folderId"` // null = top level
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
+	}
+	if in.FolderID.Set {
+		in.FolderID.V = emptyToNil(in.FolderID.V)
 	}
 	if in.Filename != nil {
 		name := strings.TrimSpace(*in.Filename)
@@ -124,17 +128,23 @@ func (s *Server) updateMedia(w http.ResponseWriter, r *http.Request) {
 		// unless the caller set them explicitly.
 		if !in.Season.Set && !in.Episode.Set {
 			if season, ep := storage.ParseSE(name); season != nil {
-				in.Season, in.Episode = optInt{true, season}, optInt{true, ep}
+				in.Season, in.Episode = opt[int]{true, season}, opt[int]{true, ep}
 			}
 		}
 	}
-	// season/episode: omitted = unchanged, null = cleared
+	// season/episode/folderId: omitted = unchanged, null = cleared
 	tag, err := s.db.Exec(r.Context(), `
 		UPDATE media_files
-		SET filename = COALESCE($2, filename),
-		    season   = CASE WHEN $3::boolean THEN $4::integer ELSE season END,
-		    episode  = CASE WHEN $5::boolean THEN $6::integer ELSE episode END
-		WHERE id = $1`, id, in.Filename, in.Season.Set, in.Season.V, in.Episode.Set, in.Episode.V)
+		SET filename  = COALESCE($2, filename),
+		    season    = CASE WHEN $3::boolean THEN $4::integer ELSE season END,
+		    episode   = CASE WHEN $5::boolean THEN $6::integer ELSE episode END,
+		    folder_id = CASE WHEN $7::boolean THEN $8::text ELSE folder_id END
+		WHERE id = $1`, id, in.Filename, in.Season.Set, in.Season.V, in.Episode.Set, in.Episode.V,
+		in.FolderID.Set, in.FolderID.V)
+	if isForeignKeyViolation(err) {
+		writeErr(w, http.StatusBadRequest, "folder not found")
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

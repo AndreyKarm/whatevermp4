@@ -1,8 +1,14 @@
 <script lang="ts">
 	import { apiPost } from '#lib/api.ts';
 
-	/** Called after the import was queued. */
-	let { onadded }: { onadded?: () => void } = $props();
+	let {
+		folderId = null,
+		onadded
+	}: {
+		folderId?: string | null;
+		/** Called after the import was queued. */
+		onadded?: () => void;
+	} = $props();
 
 	let url = $state('');
 	let name = $state('');
@@ -20,7 +26,8 @@
 			await apiPost('/api/imports', {
 				url: url.trim(),
 				name: name.trim(),
-				referer: referer.trim()
+				referer: referer.trim(),
+				folderId
 			});
 			url = name = referer = '';
 			onadded?.();

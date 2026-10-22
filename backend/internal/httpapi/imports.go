@@ -15,9 +15,10 @@ import (
 // POST /api/imports {url, name?, referer?}: download an HLS (.m3u8) stream.
 func (s *Server) createImport(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		URL     string `json:"url"`
-		Name    string `json:"name"`
-		Referer string `json:"referer"`
+		URL      string  `json:"url"`
+		Name     string  `json:"name"`
+		Referer  string  `json:"referer"`
+		FolderID *string `json:"folderId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
@@ -44,9 +45,13 @@ func (s *Server) createImport(w http.ResponseWriter, r *http.Request) {
 	key := "raw/" + id + "/" + storage.SafeName(name) + ".mkv"
 	season, ep := storage.ParseSE(name)
 	_, err := s.db.Exec(r.Context(), `
-		INSERT INTO media_files (id, uploaded_by, filename, status, raw_key, season, episode)
-		VALUES ($1, $2, $3, 'downloading', $4, $5, $6)`,
-		id, nickname(r), name, key, season, ep)
+		INSERT INTO media_files (id, uploaded_by, filename, status, raw_key, season, episode, folder_id)
+		VALUES ($1, $2, $3, 'downloading', $4, $5, $6, $7)`,
+		id, nickname(r), name, key, season, ep, emptyToNil(in.FolderID))
+	if isForeignKeyViolation(err) {
+		writeErr(w, http.StatusBadRequest, "folder not found")
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

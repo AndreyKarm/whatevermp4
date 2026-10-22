@@ -1,21 +1,27 @@
 <script lang="ts">
 	import { Play, RefreshCw, Trash2 } from '@lucide/svelte';
 	import { apiFetch } from '#lib/api.ts';
-	import type { MediaItem } from '#lib/types.ts';
+	import { folderOptions } from '#lib/folders.ts';
+	import type { Folder, MediaItem } from '#lib/types.ts';
 	import Modal from './Modal.svelte';
 
 	let {
 		item,
+		folders,
 		onclose,
 		onwatch
 	}: {
 		/** null = closed */
 		item: MediaItem | null;
+		folders: Folder[];
 		onclose: () => void;
 		onwatch: (item: MediaItem) => void;
 	} = $props();
 
+	const folderChoices = $derived(folderOptions(folders));
+
 	let filename = $state('');
+	let folderId = $state('');
 	// number inputs bind as number, or null when empty
 	let season = $state<number | null>(null);
 	let episode = $state<number | null>(null);
@@ -29,6 +35,7 @@
 		if (item && item.id !== openedId) {
 			openedId = item.id;
 			filename = item.filename;
+			folderId = item.folderId ?? '';
 			season = item.season ?? null;
 			episode = item.episode ?? null;
 			error = null;
@@ -65,7 +72,8 @@
 				body: JSON.stringify({
 					filename: filename.trim(),
 					season: num(season),
-					episode: num(episode)
+					episode: num(episode),
+					folderId: folderId || null
 				})
 			})
 		);
@@ -94,6 +102,15 @@
 			<label class="field">
 				<span class="label">Title</span>
 				<input class="input" maxlength="255" required bind:value={filename} />
+			</label>
+			<label class="field">
+				<span class="label">Folder</span>
+				<select class="input" bind:value={folderId}>
+					<option value="">— Top level —</option>
+					{#each folderChoices as o (o.id)}
+						<option value={o.id}>{o.label}</option>
+					{/each}
+				</select>
 			</label>
 			<div class="row">
 				<label class="field">

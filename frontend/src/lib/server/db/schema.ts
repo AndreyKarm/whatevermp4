@@ -9,7 +9,8 @@ import {
 	jsonb,
 	bigserial,
 	customType,
-	index
+	index,
+	type AnyPgColumn
 } from 'drizzle-orm/pg-core';
 
 // Custom bytea type for storing raw .torrent metainfo files
@@ -50,9 +51,21 @@ export interface RoomState {
 // Application Tables (Go API + Worker)
 // ============================================================================
 
+// Library folders (a series, its seasons, …). Nest via parent_id; null = top level.
+export const folders = pgTable('folders', {
+	id: text('id').primaryKey(),
+	name: text('name').notNull(),
+	parentId: text('parent_id').references((): AnyPgColumn => folders.id, {
+		onDelete: 'set null'
+	}),
+	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+});
+
 export const torrents = pgTable('torrents', {
 	id: text('id').primaryKey(),
 	addedBy: text('added_by').notNull(), // nickname
+	// folder the imported media go into
+	folderId: text('folder_id').references(() => folders.id, { onDelete: 'set null' }),
 	name: text('name').notNull().default('Fetching metadata...'),
 	magnet: text('magnet'),
 	metainfo: bytea('metainfo'),
@@ -70,8 +83,9 @@ export const mediaFiles = pgTable('media_files', {
 	torrentId: text('torrent_id').references(() => torrents.id, {
 		onDelete: 'set null'
 	}),
+	folderId: text('folder_id').references(() => folders.id, { onDelete: 'set null' }),
 	filename: text('filename').notNull(),
-	status: text('status').notNull().default('uploading'), // uploading | processing | ready | failed
+	status: text('status').notNull().default('uploading'), // uploading | downloading | processing | ready | failed
 	rawKey: text('raw_key').notNull(),
 	hlsKey: text('hls_key'),
 	posterKey: text('poster_key'),
@@ -121,6 +135,7 @@ export const jobs = pgTable(
 );
 
 // Inferred row types, handy for server code
+export type Folder = typeof folders.$inferSelect;
 export type Torrent = typeof torrents.$inferSelect;
 export type MediaFile = typeof mediaFiles.$inferSelect;
 export type Room = typeof rooms.$inferSelect;

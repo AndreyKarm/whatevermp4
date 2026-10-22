@@ -10,7 +10,16 @@
 	import { page } from '$app/state';
 	import type { MediaItem, RoomItem } from '#lib/types.ts';
 	import { resolve } from '$app/paths';
-	import { ArrowLeft, MessageSquare, Send, Trash2, Users } from '@lucide/svelte';
+	import { browser } from '$app/env';
+	import {
+		ArrowLeft,
+		MessageSquare,
+		PanelRightClose,
+		PanelRightOpen,
+		Send,
+		Trash2,
+		Users
+	} from '@lucide/svelte';
 
 	const roomId = $derived(page.params.id ?? '');
 
@@ -21,6 +30,36 @@
 	let actionError = $state<string | null>(null);
 	let message = $state('');
 	let chatEl: HTMLDivElement | undefined = $state();
+
+	// Side panel (members, settings, chat) can be hidden to give the player
+	// the full width; remembered per viewer.
+	const PANEL_KEY = 'room-panel-collapsed';
+	let collapsed = $state(readCollapsed());
+	// Chat messages seen while the panel was open, for the unread badge.
+	let seenChat = $state(0);
+	const unread = $derived(collapsed ? Math.max((room?.chat.length ?? 0) - seenChat, 0) : 0);
+
+	function readCollapsed() {
+		if (!browser) return false;
+		try {
+			return localStorage.getItem(PANEL_KEY) === '1';
+		} catch {
+			return false;
+		}
+	}
+
+	function togglePanel() {
+		collapsed = !collapsed;
+		try {
+			localStorage.setItem(PANEL_KEY, collapsed ? '1' : '0');
+		} catch {
+			/* storage unavailable: the choice just isn't remembered */
+		}
+	}
+
+	$effect(() => {
+		if (!collapsed) seenChat = room?.chat.length ?? 0;
+	});
 
 	// Connect once a nickname is chosen; reconnect if it changes.
 	$effect(() => {
@@ -139,6 +178,15 @@
 					{/each}
 				</select>
 			{/if}
+			<button
+				class="btn-icon panel-toggle"
+				title={collapsed ? 'Show room panel' : 'Hide room panel'}
+				aria-expanded={!collapsed}
+				onclick={togglePanel}
+			>
+				{#if collapsed}<PanelRightOpen size={18} />{:else}<PanelRightClose size={18} />{/if}
+				{#if unread}<span class="badge unread">{unread}</span>{/if}
+			</button>
 		</div>
 
 		<div class="screen">
@@ -160,7 +208,7 @@
 		{/if}
 	</section>
 
-	<aside class="side">
+	<aside class="side" hidden={collapsed}>
 		<div class="block">
 			<h2 class="panel-title"><Users size={16} /> Watching ({room?.members.length ?? 0})</h2>
 			<ul class="members">
@@ -258,6 +306,23 @@
 		padding: 0.5rem 0.75rem;
 	}
 
+	.panel-toggle {
+		position: relative;
+		margin-left: auto;
+		color: var(--color-gray);
+	}
+
+	.picker + .panel-toggle {
+		margin-left: 0;
+	}
+
+	.unread {
+		position: absolute;
+		top: -0.4rem;
+		right: -0.4rem;
+		padding: 0 0.35rem;
+	}
+
 	.screen {
 		display: flex;
 		flex: 1;
@@ -282,6 +347,10 @@
 		overflow: hidden;
 		border-radius: var(--radius);
 		background-color: var(--color-secondary);
+	}
+
+	.side[hidden] {
+		display: none;
 	}
 
 	@media (min-width: 1024px) {

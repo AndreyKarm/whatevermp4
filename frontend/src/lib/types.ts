@@ -24,6 +24,8 @@ export interface MediaItem {
 	id: string;
 	uploadedBy: string;
 	torrentId?: string;
+	/** library folder; absent = top level */
+	folderId?: string;
 	filename: string;
 	status: MediaStatus;
 	hlsKey?: string;
@@ -36,6 +38,14 @@ export interface MediaItem {
 	subtitleTracks: SubtitleTrack[];
 	fonts: string[];
 	error?: string;
+	createdAt: string;
+}
+
+/** Library folder (a series, a season, …); parentId absent = top level. */
+export interface Folder {
+	id: string;
+	name: string;
+	parentId?: string;
 	createdAt: string;
 }
 

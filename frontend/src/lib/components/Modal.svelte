@@ -24,8 +24,12 @@
 	// <dialog> gives focus trapping, Esc handling and a backdrop for free.
 	$effect(() => {
 		if (!dialog) return;
-		if (open && !dialog.open) dialog.showModal();
-		else if (!open && dialog.open) dialog.close();
+		if (open && !dialog.open) {
+			dialog.showModal();
+			// showModal() focuses the first focusable element (the close button);
+			// start in the first form field instead.
+			dialog.querySelector<HTMLElement>('.body input, .body select, .body textarea')?.focus();
+		} else if (!open && dialog.open) dialog.close();
 	});
 </script>
 

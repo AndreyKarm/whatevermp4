@@ -403,7 +403,6 @@
 		aspect-ratio: 16 / 9;
 		overflow: hidden;
 		border-radius: var(--radius);
-		background-color: black;
 	}
 
 	.player:fullscreen {

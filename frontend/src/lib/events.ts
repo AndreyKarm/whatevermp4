@@ -1,7 +1,7 @@
 import { PUBLIC_API_URL } from '$app/env/public';
 
 // Table names the backend announces on /api/events (see backend/internal/events).
-export type Topic = 'media_files' | 'torrents' | 'rooms';
+export type Topic = 'media_files' | 'torrents' | 'rooms' | 'folders';
 
 interface Listener {
 	topics: Topic[];

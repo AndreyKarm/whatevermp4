@@ -12,9 +12,10 @@ import (
 
 func (s *Server) initUpload(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Filename    string `json:"filename"`
-		ContentType string `json:"contentType"`
-		Parts       int32  `json:"parts"`
+		Filename    string  `json:"filename"`
+		ContentType string  `json:"contentType"`
+		Parts       int32   `json:"parts"`
+		FolderID    *string `json:"folderId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Filename == "" {
 		writeErr(w, http.StatusBadRequest, "filename required")
@@ -35,9 +36,13 @@ func (s *Server) initUpload(w http.ResponseWriter, r *http.Request) {
 
 	season, ep := storage.ParseSE(in.Filename)
 	_, err = s.db.Exec(r.Context(), `
-		INSERT INTO media_files (id, uploaded_by, filename, status, raw_key, season, episode)
-		VALUES ($1, $2, $3, 'uploading', $4, $5, $6)`,
-		id, nickname(r), in.Filename, key, season, ep)
+		INSERT INTO media_files (id, uploaded_by, filename, status, raw_key, season, episode, folder_id)
+		VALUES ($1, $2, $3, 'uploading', $4, $5, $6, $7)`,
+		id, nickname(r), in.Filename, key, season, ep, emptyToNil(in.FolderID))
+	if isForeignKeyViolation(err) {
+		writeErr(w, http.StatusBadRequest, "folder not found")
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

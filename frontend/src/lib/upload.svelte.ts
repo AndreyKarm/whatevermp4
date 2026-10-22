@@ -9,19 +9,51 @@ interface InitResponse {
 	urls: string[];
 }
 
+/**
+ * PUTs one part to its presigned URL and resolves with the ETag. Uses XHR
+ * rather than fetch because only XHR reports upload progress.
+ */
+function putPart(url: string, blob: Blob, onProgress: (loaded: number) => void): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const xhr = new XMLHttpRequest();
+		xhr.open('PUT', url);
+		xhr.upload.onprogress = (e) => onProgress(e.loaded);
+		xhr.onload = () => {
+			if (xhr.status < 200 || xhr.status >= 300) {
+				reject(new Error(`Upload failed (${xhr.status})`));
+				return;
+			}
+			const etag = xhr.getResponseHeader('ETag');
+			if (!etag) {
+				reject(new Error('Missing ETag. Add ExposeHeaders: ETag to the bucket CORS config.'));
+				return;
+			}
+			onProgress(blob.size);
+			resolve(etag);
+		};
+		xhr.onerror = () => reject(new Error('Network error while uploading'));
+		xhr.send(blob);
+	});
+}
+
 class S3Uploader {
 	/** 0..1 while an upload is running, null otherwise */
 	progress = $state<number | null>(null);
 	filename = $state('');
+	/** Media row of the running upload, so its library card can show progress. */
+	mediaId = $state<string | null>(null);
+	size = $state(0);
 	error = $state<string | null>(null);
 
 	get busy() {
 		return this.progress !== null;
 	}
 
-	async upload(file: File) {
+	async upload(file: File, folderId: string | null = null) {
 		if (this.busy) throw new Error('An upload is already running');
 		this.filename = file.name;
+		this.size = file.size;
+		this.mediaId = null;
 		this.error = null;
 		this.progress = 0;
 		try {
@@ -29,8 +61,16 @@ class S3Uploader {
 			const { mediaId, uploadId, urls } = await apiPost<InitResponse>('/api/uploads/init', {
 				filename: file.name,
 				contentType: file.type,
-				parts: partsCount
+				parts: partsCount,
+				folderId
 			});
+			this.mediaId = mediaId;
+
+			// bytes sent per part, summed for byte-accurate progress
+			const sent = new Array<number>(partsCount).fill(0);
+			const report = () => {
+				this.progress = sent.reduce((a, b) => a + b, 0) / Math.max(file.size, 1);
+			};
 
 			const completedParts: { partNumber: number; etag: string }[] = [];
 			for (let i = 0; i < partsCount; i += CONCURRENCY) {
@@ -42,15 +82,11 @@ class S3Uploader {
 					batch.map(async (idx) => {
 						const start = idx * PART_SIZE;
 						const blob = file.slice(start, Math.min(file.size, start + PART_SIZE));
-
-						const res = await fetch(urls[idx], { method: 'PUT', body: blob });
-						if (!res.ok) throw new Error(`Part ${idx + 1} failed (${res.status})`);
-						const etag = res.headers.get('ETag');
-						if (!etag) {
-							throw new Error('Missing ETag. Add ExposeHeaders: ETag to the bucket CORS config.');
-						}
+						const etag = await putPart(urls[idx], blob, (loaded) => {
+							sent[idx] = loaded;
+							report();
+						});
 						completedParts.push({ partNumber: idx + 1, etag });
-						this.progress = completedParts.length / partsCount;
 					})
 				);
 			}
@@ -64,6 +100,7 @@ class S3Uploader {
 			throw err;
 		} finally {
 			this.progress = null;
+			this.mediaId = null;
 		}
 	}
 }
