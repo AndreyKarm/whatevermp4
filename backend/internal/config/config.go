@@ -2,7 +2,6 @@ package config
 
 import (
 	"os"
-	"slices"
 	"strings"
 )
 
@@ -18,11 +17,6 @@ type Config struct {
 	WorkDir          string
 	AllowedOrigins   []string
 	PlaybackSecret   string
-	AdminIDs         []string
-}
-
-func (c Config) IsAdmin(userID string) bool {
-	return userID != "" && slices.Contains(c.AdminIDs, userID)
 }
 
 func get(k, def string) string {
@@ -55,6 +49,5 @@ func Load() Config {
 		WorkDir:          get("WORK_DIR", "/tmp/work"),
 		AllowedOrigins:   splitCSV(get("ALLOWED_ORIGINS", "http://localhost:5173")),
 		PlaybackSecret:   get("PLAYBACK_SECRET", "change-me"),
-		AdminIDs:         splitCSV(get("ADMIN_IDS", "")),
 	}
 }

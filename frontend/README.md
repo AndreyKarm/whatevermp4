@@ -15,7 +15,7 @@ To recreate this project with the same configuration:
 
 ```sh
 # recreate this project
-pnpm dlx sv@1.1.1 create --template minimal --types ts --add prettier eslint sveltekit-adapter="adapter:node" drizzle="database:postgresql+postgresql:postgres.js+docker:yes" better-auth="demo:none" --install pnpm frontend
+pnpm dlx sv@1.1.1 create --template minimal --types ts --add prettier eslint sveltekit-adapter="adapter:node" drizzle="database:postgresql+postgresql:postgres.js+docker:no" --install pnpm frontend
 ```
 
 ## Adding features

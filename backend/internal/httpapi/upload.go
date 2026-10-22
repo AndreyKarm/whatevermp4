@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"encoding/json"
-	"liotom/whateverserver/internal/auth"
 	"liotom/whateverserver/internal/jobs"
 	"liotom/whateverserver/internal/storage"
 	"net/http"
@@ -25,7 +24,6 @@ func (s *Server) initUpload(w http.ResponseWriter, r *http.Request) {
 		in.ContentType = "application/octet-stream"
 	}
 
-	user := auth.FromContext(r.Context())
 	id := uuid.NewString()
 	key := "raw/" + id + "/" + storage.SafeName(in.Filename)
 
@@ -37,9 +35,9 @@ func (s *Server) initUpload(w http.ResponseWriter, r *http.Request) {
 
 	season, ep := storage.ParseSE(in.Filename)
 	_, err = s.db.Exec(r.Context(), `
-		INSERT INTO media_files (id, uploader_id, filename, status, raw_key, season, episode)
+		INSERT INTO media_files (id, uploaded_by, filename, status, raw_key, season, episode)
 		VALUES ($1, $2, $3, 'uploading', $4, $5, $6)`,
-		id, user.ID, in.Filename, key, season, ep)
+		id, nickname(r), in.Filename, key, season, ep)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -76,11 +74,10 @@ func (s *Server) presignPart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := auth.FromContext(r.Context())
 	var rawKey string
 	err := s.db.QueryRow(r.Context(),
-		`SELECT raw_key FROM media_files WHERE id=$1 AND uploader_id=$2 AND status='uploading'`,
-		id, user.ID).Scan(&rawKey)
+		`SELECT raw_key FROM media_files WHERE id=$1 AND status='uploading'`,
+		id).Scan(&rawKey)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "upload not found")
 		return
@@ -105,11 +102,10 @@ func (s *Server) completeUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := auth.FromContext(r.Context())
 	var rawKey string
 	err := s.db.QueryRow(r.Context(),
-		`SELECT raw_key FROM media_files WHERE id=$1 AND uploader_id=$2 AND status='uploading'`,
-		id, user.ID).Scan(&rawKey)
+		`SELECT raw_key FROM media_files WHERE id=$1 AND status='uploading'`,
+		id).Scan(&rawKey)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, "upload not found")
 		return

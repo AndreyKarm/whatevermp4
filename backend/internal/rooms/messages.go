@@ -9,9 +9,7 @@ type State struct {
 }
 
 type Member struct {
-	ID        string `json:"id"`
 	Name      string `json:"name"`
-	Image     string `json:"image,omitempty"`
 	Buffering bool   `json:"buffering"`
 }
 
@@ -36,6 +34,6 @@ type Out struct {
 	Text     string   `json:"text,omitempty"`
 	T        int64    `json:"t,omitempty"`
 	Server   int64    `json:"server,omitempty"`
-	OwnerID  string   `json:"ownerId,omitempty"`
+	Owner    string   `json:"owner,omitempty"`
 	Everyone bool     `json:"everyone,omitempty"`
 }

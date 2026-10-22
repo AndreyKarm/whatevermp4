@@ -1,25 +1,33 @@
-FROM node:20-alpine AS builder
+# --- Stage 1: Build ---
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies
-COPY package*.json ./
-RUN npm ci
+# Install pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
 
-# Copy source code and build
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install
+
 COPY . .
-RUN npm run build
+RUN pnpm run build
 
-# Production stage
-FROM node:20-alpine
+# --- Stage 2: Run ---
+FROM node:22-alpine AS runner
+
 WORKDIR /app
 
-# Copy the build output and node_modules from the builder stage
+# Set environment to production
+ENV NODE_ENV=production
+
+# Copy necessary files for adapter-node
 COPY --from=builder /app/build ./build
+COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/node_modules ./node_modules
-COPY package.json ./
 
+# Set default port
 EXPOSE 3000
+ENV PORT=3000
 
-# Start the Node adapter server
-CMD ["node", "build"]
+# Start the server
+CMD ["node", "build/index.js"]

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -31,7 +32,7 @@ func (h *Hub) Join(ctx context.Context, id string, c *Client) error {
 		var raw []byte
 		var everyone bool
 		if err := h.db.QueryRow(ctx,
-			`SELECT owner_id, state, everyone_controls FROM rooms WHERE id=$1`, id).
+			`SELECT owner_name, state, everyone_controls FROM rooms WHERE id=$1`, id).
 			Scan(&owner, &raw, &everyone); err != nil {
 			return err
 		}
@@ -45,6 +46,37 @@ func (h *Hub) Join(ctx context.Context, id string, c *Client) error {
 	}
 	r.join(c)
 	return nil
+}
+
+// SetEveryoneControls applies a settings change to a loaded room.
+func (h *Hub) SetEveryoneControls(id string, v bool) {
+	h.mu.Lock()
+	r := h.rooms[id]
+	h.mu.Unlock()
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.everyone = v
+	r.broadcastLocked(r.stateMsgLocked())
+}
+
+// Remove unloads a deleted room and disconnects its clients.
+func (h *Hub) Remove(id string) {
+	h.mu.Lock()
+	r := h.rooms[id]
+	delete(h.rooms, id)
+	h.mu.Unlock()
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dirty = false
+	for c := range r.clients {
+		go c.conn.Close(websocket.StatusPolicyViolation, "room deleted")
+	}
 }
 
 func (h *Hub) Leave(c *Client) {

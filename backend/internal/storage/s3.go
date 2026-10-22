@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"liotom/whateverserver/internal/config"
+	"log"
 	"mime"
 	"os"
 	"path/filepath"
@@ -47,11 +48,29 @@ func New(ctx context.Context, cfg config.Config) (*Storage, error) {
 			o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 		})
 	}
-	return &Storage{
+	st := &Storage{
 		client:  mk(cfg.S3Endpoint),
 		presign: s3.NewPresignClient(mk(cfg.S3PublicEndpoint)),
 		bucket:  cfg.S3Bucket,
-	}, nil
+	}
+	_, _ = st.client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &cfg.S3Bucket})
+	// Browsers PUT multipart parts directly and need the ETag header back.
+	if len(cfg.AllowedOrigins) > 0 {
+		_, err := st.client.PutBucketCors(ctx, &s3.PutBucketCorsInput{
+			Bucket: &cfg.S3Bucket,
+			CORSConfiguration: &types.CORSConfiguration{CORSRules: []types.CORSRule{{
+				AllowedOrigins: cfg.AllowedOrigins,
+				AllowedMethods: []string{"GET", "PUT"},
+				AllowedHeaders: []string{"*"},
+				ExposeHeaders:  []string{"ETag"},
+				MaxAgeSeconds:  aws.Int32(3600),
+			}}},
+		})
+		if err != nil {
+			log.Printf("set bucket cors: %v", err)
+		}
+	}
+	return st, nil
 }
 
 func (s *Storage) CreateMultipart(ctx context.Context, key, contentType string) (string, error) {

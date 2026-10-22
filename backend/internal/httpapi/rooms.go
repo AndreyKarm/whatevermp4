@@ -3,7 +3,6 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
-	"liotom/whateverserver/internal/auth"
 	"liotom/whateverserver/internal/rooms"
 	"net/http"
 	"strings"
@@ -17,7 +16,7 @@ import (
 type RoomItem struct {
 	ID               string          `json:"id"`
 	Name             string          `json:"name"`
-	OwnerID          string          `json:"ownerId"`
+	OwnerName        string          `json:"ownerName"`
 	EveryoneControls bool            `json:"everyoneControls"`
 	State            json.RawMessage `json:"state"`
 	UpdatedAt        time.Time       `json:"updatedAt"`
@@ -26,7 +25,7 @@ type RoomItem struct {
 
 func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `
-		SELECT id, name, owner_id, everyone_controls, state, updated_at, created_at
+		SELECT id, name, owner_name, everyone_controls, state, updated_at, created_at
 		FROM rooms
 		ORDER BY updated_at DESC`)
 	if err != nil {
@@ -39,7 +38,7 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var rm RoomItem
 		if err := rows.Scan(
-			&rm.ID, &rm.Name, &rm.OwnerID, &rm.EveryoneControls,
+			&rm.ID, &rm.Name, &rm.OwnerName, &rm.EveryoneControls,
 			&rm.State, &rm.UpdatedAt, &rm.CreatedAt,
 		); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
@@ -65,7 +64,6 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 		name = "Watch Party"
 	}
 
-	user := auth.FromContext(r.Context())
 	id := uuid.NewString()
 	st, _ := json.Marshal(rooms.State{
 		MediaID:   in.MediaID,
@@ -76,9 +74,9 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 	})
 
 	_, err := s.db.Exec(r.Context(), `
-		INSERT INTO rooms (id, name, owner_id, everyone_controls, state)
+		INSERT INTO rooms (id, name, owner_name, everyone_controls, state)
 		VALUES ($1, $2, $3, $4, $5)`,
-		id, name, user.ID, in.EveryoneControls, st)
+		id, name, nickname(r), in.EveryoneControls, st)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -90,9 +88,9 @@ func (s *Server) getRoom(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var rm RoomItem
 	err := s.db.QueryRow(r.Context(), `
-		SELECT id, name, owner_id, everyone_controls, state, updated_at, created_at
+		SELECT id, name, owner_name, everyone_controls, state, updated_at, created_at
 		FROM rooms WHERE id=$1`, id).Scan(
-		&rm.ID, &rm.Name, &rm.OwnerID, &rm.EveryoneControls,
+		&rm.ID, &rm.Name, &rm.OwnerName, &rm.EveryoneControls,
 		&rm.State, &rm.UpdatedAt, &rm.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -108,16 +106,6 @@ func (s *Server) getRoom(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) updateRoom(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	var ownerID string
-	if err := s.db.QueryRow(r.Context(),
-		`SELECT owner_id FROM rooms WHERE id=$1`, id).Scan(&ownerID); err != nil {
-		writeErr(w, http.StatusNotFound, "room not found")
-		return
-	}
-	if !s.canManage(r, ownerID) {
-		writeErr(w, http.StatusForbidden, "forbidden")
-		return
-	}
 
 	var in struct {
 		Name             *string `json:"name"`
@@ -127,31 +115,54 @@ func (s *Server) updateRoom(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	_, err := s.db.Exec(r.Context(), `
+	if !s.requireRoomOwner(w, r, id) {
+		return
+	}
+	var everyone bool
+	err := s.db.QueryRow(r.Context(), `
 		UPDATE rooms
 		SET name              = COALESCE($2, name),
 		    everyone_controls = COALESCE($3, everyone_controls),
 		    updated_at        = now()
-		WHERE id = $1`, id, in.Name, in.EveryoneControls)
+		WHERE id = $1
+		RETURNING everyone_controls`, id, in.Name, in.EveryoneControls).Scan(&everyone)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.hub.SetEveryoneControls(id, everyone)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) deleteRoom(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	var ownerID string
-	if err := s.db.QueryRow(r.Context(),
-		`SELECT owner_id FROM rooms WHERE id=$1`, id).Scan(&ownerID); err != nil {
-		writeErr(w, http.StatusNotFound, "room not found")
+	if !s.requireRoomOwner(w, r, id) {
 		return
 	}
-	if !s.canManage(r, ownerID) {
-		writeErr(w, http.StatusForbidden, "forbidden")
+	if _, err := s.db.Exec(r.Context(), `DELETE FROM rooms WHERE id=$1`, id); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	_, _ = s.db.Exec(r.Context(), `DELETE FROM rooms WHERE id=$1`, id)
+	s.hub.Remove(id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// requireRoomOwner writes 404/403 and returns false unless the caller's
+// nickname matches the room owner.
+func (s *Server) requireRoomOwner(w http.ResponseWriter, r *http.Request, id string) bool {
+	var owner string
+	err := s.db.QueryRow(r.Context(), `SELECT owner_name FROM rooms WHERE id=$1`, id).Scan(&owner)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "room not found")
+		return false
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return false
+	}
+	if owner != nickname(r) {
+		writeErr(w, http.StatusForbidden, "only the room owner can do that")
+		return false
+	}
+	return true
 }

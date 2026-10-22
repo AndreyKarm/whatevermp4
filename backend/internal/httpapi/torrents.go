@@ -3,8 +3,6 @@ package httpapi
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
-	"liotom/whateverserver/internal/auth"
 	"liotom/whateverserver/internal/jobs"
 	"net/http"
 	"strings"
@@ -12,12 +10,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 )
 
 type TorrentItem struct {
 	ID         string    `json:"id"`
-	UserID     string    `json:"userId"`
+	AddedBy    string    `json:"addedBy"`
 	Name       string    `json:"name"`
 	Status     string    `json:"status"`
 	Progress   float64   `json:"progress"`
@@ -29,7 +26,7 @@ type TorrentItem struct {
 
 func (s *Server) listTorrents(w http.ResponseWriter, r *http.Request) {
 	rows, err := s.db.Query(r.Context(), `
-		SELECT id, user_id, name, status, progress, bytes_done, bytes_total, error, created_at
+		SELECT id, added_by, name, status, progress, bytes_done, bytes_total, error, created_at
 		FROM torrents
 		ORDER BY created_at DESC`)
 	if err != nil {
@@ -42,7 +39,7 @@ func (s *Server) listTorrents(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var t TorrentItem
 		if err := rows.Scan(
-			&t.ID, &t.UserID, &t.Name, &t.Status, &t.Progress,
+			&t.ID, &t.AddedBy, &t.Name, &t.Status, &t.Progress,
 			&t.BytesDone, &t.BytesTotal, &t.Error, &t.CreatedAt,
 		); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
@@ -79,12 +76,11 @@ func (s *Server) createTorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user := auth.FromContext(r.Context())
 	id := uuid.NewString()
 	_, err := s.db.Exec(r.Context(), `
-		INSERT INTO torrents (id, user_id, name, magnet, metainfo, status)
+		INSERT INTO torrents (id, added_by, name, magnet, metainfo, status)
 		VALUES ($1, $2, 'Fetching metadata...', $3, $4, 'queued')`,
-		id, user.ID, magnet, meta)
+		id, nickname(r), magnet, meta)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -98,21 +94,15 @@ func (s *Server) createTorrent(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) cancelTorrent(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	var userID string
-	err := s.db.QueryRow(r.Context(), `SELECT user_id FROM torrents WHERE id=$1`, id).Scan(&userID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeErr(w, http.StatusNotFound, "torrent not found")
-		return
-	}
+	tag, err := s.db.Exec(r.Context(),
+		`UPDATE torrents SET status='cancelled' WHERE id=$1 AND status IN ('queued','downloading')`, id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if !s.canManage(r, userID) {
-		writeErr(w, http.StatusForbidden, "forbidden")
+	if tag.RowsAffected() == 0 {
+		writeErr(w, http.StatusNotFound, "torrent not found or already finished")
 		return
 	}
-
-	_, _ = s.db.Exec(r.Context(), `UPDATE torrents SET status='cancelled' WHERE id=$1`, id)
 	w.WriteHeader(http.StatusNoContent)
 }

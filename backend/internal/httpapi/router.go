@@ -2,11 +2,11 @@ package httpapi
 
 import (
 	"encoding/json"
-	"liotom/whateverserver/internal/auth"
 	"liotom/whateverserver/internal/config"
 	"liotom/whateverserver/internal/rooms"
 	"liotom/whateverserver/internal/storage"
 	"net/http"
+	"net/url"
 	"slices"
 
 	"github.com/go-chi/chi/v5"
@@ -18,7 +18,6 @@ type Server struct {
 	db  *pgxpool.Pool
 	st  *storage.Storage
 	hub *rooms.Hub
-	v   *auth.Verifier
 	cfg config.Config
 }
 
@@ -26,10 +25,9 @@ func NewRouter(
 	db *pgxpool.Pool,
 	st *storage.Storage,
 	hub *rooms.Hub,
-	v *auth.Verifier,
 	cfg config.Config,
 ) http.Handler {
-	s := &Server{db: db, st: st, hub: hub, v: v, cfg: cfg}
+	s := &Server{db: db, st: st, hub: hub, cfg: cfg}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RealIP)
@@ -43,12 +41,10 @@ func NewRouter(
 	// Signed HLS playlists, fMP4 segments, subtitles, fonts, and posters
 	r.Get("/play/{token}/{id}/*", s.handlePlayback)
 
-	// WebSocket watch-party endpoint (authenticates via ?token=)
-	r.Get("/api/rooms/{id}/ws", rooms.Handler(hub, v, cfg.AllowedOrigins))
+	// WebSocket watch-party endpoint (nickname via ?nickname=)
+	r.Get("/api/rooms/{id}/ws", rooms.Handler(hub, cfg.AllowedOrigins))
 
 	r.Route("/api", func(r chi.Router) {
-		r.Use(auth.Middleware(v))
-
 		// Media library
 		r.Get("/media", s.listMedia)
 		r.Get("/media/{id}", s.getMedia)
@@ -81,8 +77,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 		origin := r.Header.Get("Origin")
 		if origin != "" && slices.Contains(s.cfg.AllowedOrigins, origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Range")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Range, X-Nickname")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
 		}
@@ -94,6 +89,17 @@ func (s *Server) cors(next http.Handler) http.Handler {
 	})
 }
 
+// nickname returns the self-chosen display name sent by the frontend
+// (URI-encoded, since headers can't carry arbitrary UTF-8).
+// No authentication is performed.
+func nickname(r *http.Request) string {
+	raw := r.Header.Get("X-Nickname")
+	if s, err := url.QueryUnescape(raw); err == nil {
+		raw = s
+	}
+	return rooms.CleanNickname(raw)
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -102,9 +108,4 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
-}
-
-func (s *Server) canManage(r *http.Request, ownerID string) bool {
-	u := auth.FromContext(r.Context())
-	return u.ID == ownerID || s.cfg.IsAdmin(u.ID)
 }

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"liotom/whateverserver/internal/auth"
 	"liotom/whateverserver/internal/config"
 	"liotom/whateverserver/internal/db"
 	"liotom/whateverserver/internal/httpapi"
@@ -32,13 +31,12 @@ func main() {
 		log.Fatal(err)
 	}
 
-	verifier := auth.NewVerifier(pool)
 	hub := rooms.NewHub(pool)
 	go hub.Run(ctx)
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: httpapi.NewRouter(pool, st, hub, verifier, cfg),
+		Handler: httpapi.NewRouter(pool, st, hub, cfg),
 	}
 
 	go func() {

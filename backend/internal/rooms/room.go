@@ -9,7 +9,7 @@ import (
 
 type Room struct {
 	ID       string
-	OwnerID  string
+	Owner    string // owner's nickname
 	everyone bool
 
 	mu      sync.Mutex
@@ -20,7 +20,7 @@ type Room struct {
 }
 
 func newRoom(id, owner string, everyone bool) *Room {
-	return &Room{ID: id, OwnerID: owner, everyone: everyone,
+	return &Room{ID: id, Owner: owner, everyone: everyone,
 		state: State{Rate: 1}, clients: map[*Client]struct{}{}}
 }
 
@@ -41,14 +41,13 @@ func (r *Room) snapshotLocked() {
 }
 
 func (r *Room) canControl(c *Client) bool {
-	return r.everyone || c.User.ID == r.OwnerID
+	return r.everyone || c.Nickname == r.Owner
 }
 
 func (r *Room) membersLocked() []Member {
 	ms := make([]Member, 0, len(r.clients))
 	for c := range r.clients {
-		ms = append(ms, Member{ID: c.User.ID, Name: c.User.Name,
-			Image: c.User.Image, Buffering: c.buffering})
+		ms = append(ms, Member{Name: c.Nickname, Buffering: c.buffering})
 	}
 	return ms
 }
@@ -56,7 +55,7 @@ func (r *Room) membersLocked() []Member {
 func (r *Room) stateMsgLocked() Out {
 	st := r.state
 	return Out{Type: "state", State: &st, Holding: r.holding, Server: nowMs(),
-		OwnerID: r.OwnerID, Everyone: r.everyone}
+		Owner: r.Owner, Everyone: r.everyone}
 }
 
 func (r *Room) broadcastLocked(o Out) {
@@ -124,11 +123,11 @@ func (r *Room) handle(c *Client, in In) {
 		if t == "" {
 			return
 		}
-		if len(t) > 500 {
-			t = t[:500]
+		if r := []rune(t); len(r) > 500 {
+			t = string(r[:500])
 		}
 		r.broadcastLocked(Out{Type: "chat", Text: t,
-			From: &Member{ID: c.User.ID, Name: c.User.Name, Image: c.User.Image}})
+			From: &Member{Name: c.Nickname}})
 		return
 	}
 

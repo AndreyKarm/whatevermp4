@@ -58,7 +58,7 @@ func (d *Downloader) Run(ctx context.Context, id string) error {
 	var magnet *string
 	var meta []byte
 	if err := d.db.QueryRow(ctx,
-		`SELECT user_id, magnet, metainfo FROM torrents WHERE id=$1`, id).
+		`SELECT added_by, magnet, metainfo FROM torrents WHERE id=$1`, id).
 		Scan(&userID, &magnet, &meta); err != nil {
 		return err
 	}
@@ -165,7 +165,7 @@ func (d *Downloader) Run(ctx context.Context, id string) error {
 		}
 		s, e := storage.ParseSE(base)
 		if _, err := d.db.Exec(ctx, `
-			INSERT INTO media_files (id, uploader_id, filename, status, raw_key, season, episode, torrent_id)
+			INSERT INTO media_files (id, uploaded_by, filename, status, raw_key, season, episode, torrent_id)
 			VALUES ($1,$2,$3,'processing',$4,$5,$6,$7)`,
 			mid, userID, base, key, s, e, id); err != nil {
 			return err

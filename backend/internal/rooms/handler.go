@@ -2,15 +2,30 @@ package rooms
 
 import (
 	"context"
-	"liotom/whateverserver/internal/auth"
 	"net/http"
 	"net/url"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/go-chi/chi/v5"
 )
 
-func Handler(h *Hub, v *auth.Verifier, origins []string) http.HandlerFunc {
+const maxNickname = 32
+
+// CleanNickname trims and length-limits a self-chosen nickname.
+func CleanNickname(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "Anonymous"
+	}
+	if utf8.RuneCountInString(s) > maxNickname {
+		s = string([]rune(s)[:maxNickname])
+	}
+	return s
+}
+
+func Handler(h *Hub, origins []string) http.HandlerFunc {
 	var patterns []string
 	for _, o := range origins {
 		if u, err := url.Parse(o); err == nil && u.Host != "" {
@@ -18,21 +33,8 @@ func Handler(h *Hub, v *auth.Verifier, origins []string) http.HandlerFunc {
 		}
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		tok := auth.ExtractToken(
-			r.Header.Get("Authorization"),
-			r.URL.Query().Get("token"),
-			func(name string) string {
-				if c, err := r.Cookie(name); err == nil {
-					return c.Value
-				}
-				return ""
-			},
-		)
-		user, err := v.Verify(r.Context(), tok)
-		if err != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+		name := CleanNickname(r.URL.Query().Get("nickname"))
+
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: patterns})
 		if err != nil {
 			return
@@ -42,7 +44,7 @@ func Handler(h *Hub, v *auth.Verifier, origins []string) http.HandlerFunc {
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 
-		c := &Client{User: user, conn: conn, send: make(chan []byte, 64)}
+		c := &Client{Nickname: name, conn: conn, send: make(chan []byte, 64)}
 		go c.writeLoop(ctx)
 		if err := h.Join(ctx, chi.URLParam(r, "id"), c); err != nil {
 			conn.Close(websocket.StatusPolicyViolation, "room not found")

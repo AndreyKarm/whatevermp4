@@ -3,14 +3,13 @@ package rooms
 import (
 	"context"
 	"encoding/json"
-	"liotom/whateverserver/internal/auth"
 	"time"
 
 	"github.com/coder/websocket"
 )
 
 type Client struct {
-	User      auth.User
+	Nickname  string
 	conn      *websocket.Conn
 	send      chan []byte
 	room      *Room
