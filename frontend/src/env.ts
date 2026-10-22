@@ -1,12 +1,9 @@
 import { defineEnvVars } from '@sveltejs/kit/env';
 
-// Variables without a schema are required at build time too, which breaks the Docker build
-// (no .env in the image). Both are read at runtime, so compose's values still apply.
+// Read at runtime (not inlined at build), so compose's value applies without a
+// rebuild. The fallback keeps the Docker build working without a .env.
+// DATABASE_URL is only used by drizzle-kit, which reads process.env itself.
 export const variables = defineEnvVars({
-	DATABASE_URL: {
-		description: 'The database connection string (only used by drizzle-kit and server/db).',
-		schema: (v) => v || undefined
-	},
 	PUBLIC_API_URL: {
 		public: true,
 		description: 'Browser-reachable Go API base URL.',

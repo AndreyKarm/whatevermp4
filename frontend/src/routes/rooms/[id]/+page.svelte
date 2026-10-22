@@ -8,7 +8,8 @@
 	import { RoomSocket } from '#lib/room.svelte.ts';
 	import Player from '#lib/components/Player.svelte';
 	import { page } from '$app/state';
-	import type { MediaItem, RoomItem } from '#lib/types.ts';
+	import type { Folder, MediaItem, RoomItem } from '#lib/types.ts';
+	import { pathLabel } from '#lib/folders.ts';
 	import { resolve } from '$app/paths';
 	import { browser } from '$app/env';
 	import {
@@ -27,6 +28,7 @@
 	let info = $state<RoomItem | null>(null);
 	let mediaItem = $state<MediaItem | null>(null);
 	let library = $state<MediaItem[]>([]);
+	let folders = $state<Folder[]>([]);
 	let actionError = $state<string | null>(null);
 	let message = $state('');
 	let chatEl: HTMLDivElement | undefined = $state();
@@ -93,7 +95,26 @@
 		apiFetch<MediaItem[]>('/api/media')
 			.then((list) => (library = list.filter((m) => m.status === 'ready')))
 			.catch(console.error);
+		apiFetch<Folder[]>('/api/folders')
+			.then((list) => (folders = list))
+			.catch(console.error);
 	}
+
+	// Picker options grouped by folder path ("Show / Season 1"), top level first.
+	const pickerGroups = $derived.by(() => {
+		const groups: Record<string, MediaItem[]> = {};
+		for (const m of library) {
+			const label = m.folderId ? pathLabel(folders, m.folderId) || 'Library' : 'Library';
+			(groups[label] ??= []).push(m);
+		}
+		const byName = (a: MediaItem, b: MediaItem) =>
+			a.filename.localeCompare(b.filename, undefined, { numeric: true });
+		return Object.entries(groups)
+			.map(([label, items]) => ({ label, items: items.sort(byName) }))
+			.sort((a, b) =>
+				a.label === 'Library' ? -1 : b.label === 'Library' ? 1 : a.label.localeCompare(b.label)
+			);
+	});
 
 	// The selected media, kept fresh (e.g. after a re-process) via server events.
 	$effect(() => {
@@ -110,7 +131,7 @@
 	$effect(() => {
 		if (!room?.canControl) return;
 		loadLibrary();
-		return onChange(['media_files'], loadLibrary);
+		return onChange(['media_files', 'folders'], loadLibrary);
 	});
 
 	// Keep the newest chat message in view.
@@ -173,8 +194,12 @@
 					}}
 				>
 					<option value="" disabled>Choose a movie…</option>
-					{#each library as m (m.id)}
-						<option value={m.id}>{m.filename}</option>
+					{#each pickerGroups as g (g.label)}
+						<optgroup label={g.label}>
+							{#each g.items as m (m.id)}
+								<option value={m.id}>{m.filename}</option>
+							{/each}
+						</optgroup>
 					{/each}
 				</select>
 			{/if}
@@ -193,7 +218,8 @@
 			{#if room?.fatal}
 				<p class="error-text">This room is gone ({room.fatal}).</p>
 			{:else if room && mediaItem?.playbackUrl}
-				{#key `${mediaItem.id}:${mediaItem.playbackUrl}`}
+				<!-- remount per movie; a re-process unmounts it anyway (status → processing) -->
+				{#key mediaItem.id}
 					<Player item={mediaItem} {room} apiUrl={PUBLIC_API_URL} />
 				{/key}
 			{:else if mediaItem}

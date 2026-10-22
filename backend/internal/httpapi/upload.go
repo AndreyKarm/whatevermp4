@@ -11,10 +11,11 @@ import (
 )
 
 func (s *Server) initUpload(w http.ResponseWriter, r *http.Request) {
+	// Part URLs are presigned one at a time (POST /uploads/{id}/presign) right
+	// before each part is sent, so long uploads don't outlive their URLs.
 	var in struct {
 		Filename    string  `json:"filename"`
 		ContentType string  `json:"contentType"`
-		Parts       int32   `json:"parts"`
 		FolderID    *string `json:"folderId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Filename == "" {
@@ -48,23 +49,9 @@ func (s *Server) initUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var urls []string
-	if in.Parts > 0 && in.Parts <= 10000 {
-		urls = make([]string, in.Parts)
-		for i := int32(1); i <= in.Parts; i++ {
-			u, err := s.st.PresignPart(r.Context(), key, uploadID, i)
-			if err != nil {
-				writeErr(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-			urls[i-1] = u
-		}
-	}
-
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"mediaId":  id,
 		"uploadId": uploadID,
-		"urls":     urls,
 	})
 }
 
@@ -74,7 +61,8 @@ func (s *Server) presignPart(w http.ResponseWriter, r *http.Request) {
 		UploadID   string `json:"uploadId"`
 		PartNumber int32  `json:"partNumber"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.UploadID == "" || in.PartNumber < 1 {
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.UploadID == "" ||
+		in.PartNumber < 1 || in.PartNumber > 10000 { // S3's part limit
 		writeErr(w, http.StatusBadRequest, "invalid request")
 		return
 	}

@@ -21,6 +21,12 @@ func main() {
 	defer stop()
 
 	cfg := config.Load()
+	if err := cfg.Check(); err != nil {
+		log.Fatal(err)
+	}
+	if cfg.PlaybackSecret == config.DefaultPlaybackSecret {
+		log.Print("warning: PLAYBACK_SECRET is not set; playback URLs can be forged")
+	}
 	pool, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatal(err)
@@ -30,6 +36,9 @@ func main() {
 	st, err := storage.New(ctx, cfg)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if err := st.SetCORS(ctx, cfg.AllowedOrigins); err != nil {
+		log.Printf("set bucket cors (browser uploads may fail): %v", err)
 	}
 
 	bus := events.NewBus()

@@ -1,4 +1,4 @@
-import { apiPost } from './api';
+import { apiFetch, apiPost } from './api';
 
 const PART_SIZE = 64 * 1024 * 1024;
 const CONCURRENCY = 4;
@@ -6,7 +6,6 @@ const CONCURRENCY = 4;
 interface InitResponse {
 	mediaId: string;
 	uploadId: string;
-	urls: string[];
 }
 
 /**
@@ -56,15 +55,16 @@ class S3Uploader {
 		this.mediaId = null;
 		this.error = null;
 		this.progress = 0;
+		let mediaId: string | null = null;
 		try {
 			const partsCount = Math.max(1, Math.ceil(file.size / PART_SIZE));
-			const { mediaId, uploadId, urls } = await apiPost<InitResponse>('/api/uploads/init', {
+			const init = await apiPost<InitResponse>('/api/uploads/init', {
 				filename: file.name,
 				contentType: file.type,
-				parts: partsCount,
 				folderId
 			});
-			this.mediaId = mediaId;
+			mediaId = this.mediaId = init.mediaId;
+			const { uploadId } = init;
 
 			// bytes sent per part, summed for byte-accurate progress
 			const sent = new Array<number>(partsCount).fill(0);
@@ -82,7 +82,12 @@ class S3Uploader {
 					batch.map(async (idx) => {
 						const start = idx * PART_SIZE;
 						const blob = file.slice(start, Math.min(file.size, start + PART_SIZE));
-						const etag = await putPart(urls[idx], blob, (loaded) => {
+						// presigned just in time, so slow uploads never hold an expired URL
+						const { url } = await apiPost<{ url: string }>(`/api/uploads/${mediaId}/presign`, {
+							uploadId,
+							partNumber: idx + 1
+						});
+						const etag = await putPart(url, blob, (loaded) => {
 							sent[idx] = loaded;
 							report();
 						});
@@ -97,6 +102,9 @@ class S3Uploader {
 			});
 		} catch (err) {
 			this.error = err instanceof Error ? err.message : 'Upload failed';
+			// Don't leave a stuck "uploading" entry; deleting it also aborts the
+			// S3 upload. Best effort: the worker's janitor catches what this misses.
+			if (mediaId) apiFetch(`/api/media/${mediaId}`, { method: 'DELETE' }).catch(() => {});
 			throw err;
 		} finally {
 			this.progress = null;

@@ -15,7 +15,13 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-const playbackTTL = 12 * time.Hour
+const (
+	playbackTTL = 12 * time.Hour
+	// Expiries are rounded up to this step so a media's URL stays identical
+	// between API calls. Otherwise every refetch would change it, reloading
+	// posters and remounting players keyed on it.
+	playbackTTLStep = 6 * time.Hour
+)
 
 // signPlayback creates a URL-safe HMAC token bound to a media ID and expiration.
 func (s *Server) signPlayback(mediaID string, exp time.Time) string {
@@ -42,7 +48,9 @@ func (s *Server) verifyPlayback(token, mediaID string) bool {
 // playbackBase returns "/play/{token}/{id}" so the frontend can append
 // "/master.m3u8", "/poster.jpg", "/subs/...", or "/fonts/...".
 func (s *Server) playbackBase(mediaID string) string {
-	tok := s.signPlayback(mediaID, time.Now().Add(playbackTTL))
+	// valid for 12-18h, and the same token for everyone within a 6h window
+	exp := time.Now().Add(playbackTTL).Truncate(playbackTTLStep).Add(playbackTTLStep)
+	tok := s.signPlayback(mediaID, exp)
 	return fmt.Sprintf("/play/%s/%s", tok, mediaID)
 }
 

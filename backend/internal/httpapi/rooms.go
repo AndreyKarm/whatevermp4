@@ -134,6 +134,19 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "Watch Party"
 	}
+	if in.MediaID != "" {
+		var status string
+		err := s.db.QueryRow(r.Context(),
+			`SELECT status FROM media_files WHERE id=$1`, in.MediaID).Scan(&status)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && status != "ready") {
+			writeErr(w, http.StatusBadRequest, "media not found or not ready")
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 
 	id := uuid.NewString()
 	st, _ := json.Marshal(rooms.State{

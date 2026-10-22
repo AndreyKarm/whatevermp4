@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"strings"
 )
@@ -36,9 +37,13 @@ func splitCSV(s string) []string {
 	return out
 }
 
+// DefaultPlaybackSecret is only fit for local development: anyone who knows
+// it can mint playback URLs.
+const DefaultPlaybackSecret = "change-me"
+
 func Load() Config {
 	return Config{
-		Addr:             get("ADDR", ":8080"),
+		Addr:             get("ADDR", ":8088"),
 		DatabaseURL:      get("DATABASE_URL", ""),
 		S3Endpoint:       get("S3_ENDPOINT", "http://localhost:9000"),
 		S3PublicEndpoint: get("S3_PUBLIC_ENDPOINT", "http://localhost:9000"),
@@ -48,6 +53,14 @@ func Load() Config {
 		S3Bucket:         get("S3_BUCKET", "media"),
 		WorkDir:          get("WORK_DIR", "/tmp/work"),
 		AllowedOrigins:   splitCSV(get("ALLOWED_ORIGINS", "http://localhost:5173")),
-		PlaybackSecret:   get("PLAYBACK_SECRET", "change-me"),
+		PlaybackSecret:   get("PLAYBACK_SECRET", DefaultPlaybackSecret),
 	}
+}
+
+// Check returns an error for settings neither binary can run without.
+func (c Config) Check() error {
+	if c.DatabaseURL == "" {
+		return errors.New("DATABASE_URL is not set")
+	}
+	return nil
 }

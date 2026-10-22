@@ -29,30 +29,30 @@ frontend/            SvelteKit 3 + Svelte 5 (runes), plain CSS (no Tailwind), ad
     progress.ts      per-viewer watch positions in localStorage
     folders.ts       folder paths, subtrees and select options
     time.ts          formatTime()
-    nickname.svelte.ts  nickname state in localStorage, plus a context helper
+    nickname.svelte.ts  `nickname` singleton, kept in localStorage
     room.svelte.ts   RoomSocket: WebSocket client, reconnect, server clock offset, target position, canControl
     upload.svelte.ts `uploader` singleton: browser → S3 multipart upload, progress survives closing the modal
     types.ts         API response types and RoomIn/RoomOut WS messages (mirror the Go structs)
     components/      Modal (<dialog>), Player (hls.js, drift sync, buffer bar, skip, shortcuts, quality, resume),
                      UploadModal (tabs: Uploader / Torrents / UrlImport), MediaEditModal, FolderModal, Downloads
-    server/db/       drizzle schema.ts (source of truth for the DB schema) and client
+    server/db/       drizzle schema.ts: source of truth for the DB schema (used only by drizzle-kit)
   src/routes/        / (rooms with live viewers), /library (movies, add/edit modals),
                      /rooms/[id] (player, members, chat, host settings)
 ```
 
 ## How it fits together
 
-- **Upload:** `POST /api/uploads/init` creates a `media_files` row (`uploading`) and presigned part URLs. The browser PUTs 64 MB parts straight to S3, then `POST /api/uploads/{id}/complete` finishes the upload, sets `processing` and enqueues a `process` job.
+- **Upload:** `POST /api/uploads/init` creates a `media_files` row (`uploading`) and an S3 multipart upload. For each 64 MB part the browser asks `POST /api/uploads/{id}/presign` for a URL just before PUTting it straight to S3 (so long uploads never hold expired URLs), then `POST /api/uploads/{id}/complete` finishes it, sets `processing` and enqueues a `process` job. A failed upload deletes its row; deleting media also aborts any unfinished multipart upload under `raw/{id}/`.
 - **Torrent:** `POST /api/torrents` stores a magnet link or base64 metainfo and enqueues a `torrent` job. The worker downloads only the video files (skipping "sample"), uploads each one to `raw/{id}/…`, inserts `media_files` rows and enqueues a `process` job for each.
 - **Link import:** `POST /api/imports` (`url`, optional `name`, `referer`) creates a `media_files` row (`downloading`) and enqueues an `import` job. The worker remuxes the `.m3u8` stream into MKV with `ffmpeg -c copy` (network protocols only, via `-protocol_whitelist`), uploads it as the raw file and enqueues `process`. Master playlists use ffmpeg's default stream pick (best video plus one audio).
 - **Process:** the worker downloads the raw file, then runs `ffprobe` → `BuildPlan` → `ffmpeg`. It copies H.264 8-bit video and AAC ≤2ch audio as is and re-encodes everything else. It writes `hls/{id}/master.m3u8`, segments, `subs/*.vtt|.ass`, `fonts/` and `poster.jpg`, then marks the media `ready`. Video variants: the source quality (copied when browser-safe) plus up to two lower ladder steps (1080/720/480/360p, `variants()` in `transcode/hls.go`), named `stream_{height}p`. When the source is copied, the encoded ones use `-force_key_frames source` so all variants cut segments at the same times. With one audio track, audio is muxed into every video variant; with several, they are shared alternate renditions. `POST /api/media/{id}/reprocess` re-runs it from the stored original (old output is deleted first); media processed before the ladder existed only gets lower qualities after a re-process.
 - **Folders:** `folders` (id, name, parent_id) nest arbitrarily (a series → seasons → …); `media_files.folder_id` and `torrents.folder_id` point into them (null = top level; a torrent's videos inherit its folder). `/api/folders` lists/creates; `PATCH` renames or moves (refuses cycles via a recursive CTE); `DELETE` moves the folder's subfolders, media and torrents up to its parent and never deletes content. Uploads, imports and torrents accept `folderId`; `PATCH /api/media/{id}` moves media (`folderId: null` = top level). The library shows one folder at a time via `?folder=<id>`, and the frontend builds paths and subtrees itself (`src/lib/folders.ts`).
 - **Download:** `GET /api/media/{id}/download` 302-redirects to a 15-minute presigned S3 link for the original (`raw_key`) with an attachment filename.
 - **Live updates:** triggers on `media_files`, `torrents` and `rooms` (migration 0001) `pg_notify('events', <table>)`. The API LISTENs on its own connection and fans out `{"type": "<table>"}` on the `/api/events` WebSocket; the hub also publishes `rooms` on join/leave/playback changes. Pages refetch on these events and never poll. `GET /api/rooms` merges the hub's live members and state.
-- **Playback:** media responses include `playbackUrl` = `/play/{hmacToken}/{id}` (12h TTL, signed with `PLAYBACK_SECRET`). The client appends `/master.m3u8`, and the API proxies the files from S3 with Range support.
+- **Playback:** media responses include `playbackUrl` = `/play/{hmacToken}/{id}`, signed with `PLAYBACK_SECRET`. The expiry is rounded up to a 6h step (valid 12–18h), so the URL is identical across API calls within a window; posters stay cached and nothing keyed on it remounts. The client appends `/master.m3u8`, and the API proxies the files from S3 with Range support.
 - **Rooms:** the WebSocket is at `/api/rooms/{id}/ws?nickname=…`. Client → server: `play|pause|seek|rate|change_media|buffering|chat|ping`. Server → client: `state|members|chat|pong|error` (see `rooms/messages.go`). The server is authoritative: position = `position + (now - updatedAt) * rate` while playing. If any member is buffering, the room pauses and sets `holding`. Only the owner (matched by nickname) can control playback unless `everyone_controls` is on. The hub writes dirty state to `rooms.state` every 10s and evicts empty rooms (touching `updated_at`). `Hub.reap` then deletes rooms that aren't loaded and haven't been touched for 60s, so a room disappears about a minute after the last viewer leaves (or if its creator never arrives). Rooms are temporary; nothing should rely on them lasting.
 - **Per-viewer state (localStorage only, `src/lib/progress.ts` and `Player.svelte`):** each viewer's position per media (`progress:{mediaId}`, saved every 5s while playing, on pause and on leave, and cleared near the start or end), quality (`quality`, a height or `auto`, applied through hls.js levels), and volume/mute (`sound`). When a host starts a room from the library or switches media, the room starts at the host's saved position (`position` on `POST /api/rooms` and on `change_media`).
-- **Jobs:** the `jobs` table is claimed with `FOR UPDATE SKIP LOCKED`. A job gets 3 attempts with a 30s backoff. On startup the worker requeues `running` jobs, which assumes a **single worker instance**.
+- **Jobs:** the `jobs` table is claimed with `FOR UPDATE SKIP LOCKED`. A job gets 3 attempts with a 30s backoff. On startup the worker requeues `running` jobs, which assumes a **single worker instance**. Its hourly janitor deletes uploads stuck in `uploading` for a day (with their S3 parts) and `done`/`failed` jobs older than a week. Jobs for media deleted in the meantime end quietly; a process that finishes after its media was deleted removes its output.
 
 ## Running
 
@@ -85,7 +85,7 @@ cd backend && go run ./cmd/api
 cd backend && go run ./cmd/worker
 ```
 
-Checks: `go build ./...`, `go vet ./...`. There are no tests yet.
+Checks: `go build ./...`, `go vet ./...`. There are no tests yet. Both binaries exit if `DATABASE_URL` is unset; the API warns when `PLAYBACK_SECRET` is left at its insecure default. `ADDR` defaults to `:8088`.
 
 ### Frontend locally
 
@@ -126,8 +126,11 @@ Other scripts: `pnpm build`, `pnpm check` (svelte-check), `pnpm lint` (prettier 
 
 ## Known gaps / gotchas
 
-- `PUBLIC_API_URL` is read at runtime (not inlined at build), so it can be changed in compose without rebuilding. `BACKEND_URL` is also passed to `web` but nothing reads it yet.
-- Browser multipart upload needs the bucket CORS to expose `ETag`. `storage.New` sets this on startup from `ALLOWED_ORIGINS` and only logs if the S3 server rejects it.
+- `PUBLIC_API_URL` is read at runtime (not inlined at build), so it can be changed in compose without rebuilding. The `web` service doesn't read `DATABASE_URL` or `BACKEND_URL`; compose still passes them.
+- Browser multipart upload needs the bucket CORS to expose `ETag`. Only the API sets it (`Storage.SetCORS` from `ALLOWED_ORIGINS`, on startup, logging if the S3 server rejects it). Don't call it from the worker: it has no origins configured and would overwrite the rule.
+- ASS subtitles and MKV fonts are extracted (`subs/*.ass`, `fonts/`) but the player only shows the WebVTT conversion; styled ASS rendering isn't implemented.
+- `storage.UploadFile` uses `feature/s3/manager`, which is deprecated in favour of `transfermanager`; it still works.
+- Link imports fetch any http(s) URL from the worker, including private network addresses.
 - The room WebSocket is closed with code 1008 when the room doesn't exist or is deleted. The frontend treats that as final and doesn't reconnect.
 - ffmpeg only expands `%v` in `-hls_fmp4_init_filename` when there are several variants; single-variant output needs a literal init name (see `RunHLS`).
 - Playback drift: the player avoids changing `playbackRate` repeatedly (Chrome's audio falls behind the video when it does). It hard-seeks past 1s, uses one fixed ±5% step between 0.25s and 1s, and resets under 0.05s.

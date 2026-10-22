@@ -33,7 +33,6 @@ func NewRouter(
 	s := &Server{db: db, st: st, hub: hub, bus: bus, cfg: cfg}
 
 	r := chi.NewRouter()
-	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(s.cors)
 
@@ -96,6 +95,8 @@ func (s *Server) cors(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Range, X-Nickname")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+			// let browsers cache the preflight instead of sending one per request
+			w.Header().Set("Access-Control-Max-Age", "600")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

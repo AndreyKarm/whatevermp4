@@ -1,26 +1,35 @@
 import { browser } from '$app/env';
-import { getContext, setContext } from 'svelte';
+
+const KEY = 'nickname';
+
+// localStorage can throw (private mode, blocked site data); the nickname then
+// just isn't remembered across reloads.
+function load(): string {
+	if (!browser) return '';
+	try {
+		return localStorage.getItem(KEY) ?? '';
+	} catch {
+		return '';
+	}
+}
 
 class NicknameState {
-	#name = $state(browser ? (localStorage.getItem('nickname') ?? '') : '');
+	#name = $state(load());
 	get name() {
 		return this.#name;
 	}
 	set name(val: string) {
 		this.#name = val;
-		if (browser) localStorage.setItem('nickname', val);
+		try {
+			localStorage.setItem(KEY, val);
+		} catch {
+			/* storage unavailable */
+		}
 	}
 	get hasNickname() {
 		return this.#name.length > 0;
 	}
 }
 
+/** This viewer's self-chosen display name, sent with every API call. */
 export const nickname = new NicknameState();
-
-const NICKNAME_KEY = Symbol('nickname');
-export function setNicknameContext() {
-	return setContext(NICKNAME_KEY, nickname);
-}
-export function getNicknameContext() {
-	return getContext<NicknameState>(NICKNAME_KEY);
-}

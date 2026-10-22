@@ -1,54 +1,23 @@
-# sv
+# whatevermp4 frontend
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+SvelteKit 3 / Svelte 5 (runes) app for the watch-party server, styled with plain CSS.
+It talks to the Go API in `../backend` over REST and WebSockets; see `../CLAUDE.md`
+for the architecture, conventions and how to run the whole stack.
 
-## Creating a project
-
-If you're seeing this, you've probably already done this step. Congrats!
-
-```sh
-# create a new project
-npx sv create my-app
-```
-
-To recreate this project with the same configuration:
+## Develop
 
 ```sh
-# recreate this project
-pnpm dlx sv@1.1.1 create --template minimal --types ts --add prettier eslint sveltekit-adapter="adapter:node" drizzle="database:postgresql+postgresql:postgres.js+docker:no" --install pnpm frontend
+pnpm install
+pnpm dev
 ```
 
-## Adding features
+Set `PUBLIC_API_URL` (default `http://localhost:8088`) in `.env` if the API runs elsewhere.
+`DATABASE_URL` is only needed for the drizzle-kit scripts below.
 
-Add features to your project with `sv add`:
+## Scripts
 
-```sh
-npx sv add
-```
-
-For example, to add Tailwind CSS:
-
-```sh
-npx sv add tailwindcss
-```
-
-## Developing
-
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
-
-```sh
-npm run dev
-
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
-```
-
-## Building
-
-To create a production version of your app:
-
-```sh
-npm run build
-```
-
-You can preview the production build with `npm run preview`.
+- `pnpm build`: production build (adapter-node, output in `build/`)
+- `pnpm check`: svelte-check
+- `pnpm lint`, `pnpm format`: prettier + eslint
+- `pnpm db:push`, `pnpm db:generate`: apply / generate the schema in
+  `src/lib/server/db/schema.ts` (migrations are written to `../backend/migrations`)

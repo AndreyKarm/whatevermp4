@@ -1,6 +1,6 @@
 <script lang="ts">
 	import favicon from '#lib/assets/favicon.svg';
-	import { getNicknameContext, setNicknameContext } from '#lib/nickname.svelte.ts';
+	import { nickname } from '#lib/nickname.svelte.ts';
 	import Modal from '#lib/components/Modal.svelte';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
@@ -10,8 +10,6 @@
 	import './app.css';
 
 	let { children }: LayoutProps = $props();
-	setNicknameContext();
-	const nickname = getNicknameContext();
 
 	let editing = $state(false);
 	// The nickname lives in localStorage, so the server can't know it; wait for mount

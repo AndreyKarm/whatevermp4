@@ -211,10 +211,8 @@ func (s *Server) reprocessMedia(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteMedia(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var rawKey string
-	var hlsKey *string
 	err := s.db.QueryRow(r.Context(),
-		`SELECT raw_key, hls_key FROM media_files WHERE id=$1`, id).
-		Scan(&rawKey, &hlsKey)
+		`DELETE FROM media_files WHERE id=$1 RETURNING raw_key`, id).Scan(&rawKey)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeErr(w, http.StatusNotFound, "media not found")
 		return
@@ -223,11 +221,6 @@ func (s *Server) deleteMedia(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	_, _ = s.db.Exec(r.Context(), `DELETE FROM media_files WHERE id=$1`, id)
-	_ = s.st.DeleteKey(r.Context(), rawKey)
-	if hlsKey != nil {
-		_ = s.st.DeletePrefix(r.Context(), *hlsKey)
-	}
+	s.st.DeleteMedia(r.Context(), id, rawKey)
 	w.WriteHeader(http.StatusNoContent)
 }

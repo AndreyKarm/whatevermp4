@@ -97,12 +97,24 @@ func (d *Downloader) Run(ctx context.Context, id string) error {
 		}
 	}()
 
-	select {
-	case <-t.GotInfo():
-	case <-time.After(5 * time.Minute):
-		return errors.New("timed out fetching metadata")
-	case <-ctx.Done():
-		return ctx.Err()
+	// Wait for metadata, still noticing a cancel in the meantime.
+	deadline := time.After(5 * time.Minute)
+	poll := time.NewTicker(2 * time.Second)
+	defer poll.Stop()
+waitInfo:
+	for {
+		select {
+		case <-t.GotInfo():
+			break waitInfo
+		case <-deadline:
+			return errors.New("timed out fetching metadata")
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-poll.C:
+			if d.cancelled(ctx, id) {
+				return nil
+			}
+		}
 	}
 	if n := t.Name(); n != "" && n != "." && n != ".." {
 		dataPath = filepath.Join(d.dir, filepath.Base(n))

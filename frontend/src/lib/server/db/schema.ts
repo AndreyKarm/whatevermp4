@@ -104,16 +104,13 @@ export const rooms = pgTable('rooms', {
 	name: text('name').notNull().default('Watch Party'),
 	ownerName: text('owner_name').notNull(), // nickname
 	everyoneControls: boolean('everyone_controls').notNull().default(false),
-	state: jsonb('state')
-		.$type<RoomState>()
-		.notNull()
-		.default({
-			mediaId: '',
-			playing: false,
-			position: 0,
-			updatedAt: 0,
-			rate: 1
-		}),
+	state: jsonb('state').$type<RoomState>().notNull().default({
+		mediaId: '',
+		playing: false,
+		position: 0,
+		updatedAt: 0,
+		rate: 1
+	}),
 	updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 });

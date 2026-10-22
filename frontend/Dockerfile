@@ -3,8 +3,8 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# pnpm at the version pinned by package.json's packageManager
+RUN corepack enable
 
 # pnpm-workspace.yaml holds allowBuilds (esbuild); without it pnpm refuses build scripts
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./

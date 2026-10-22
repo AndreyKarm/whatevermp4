@@ -21,6 +21,7 @@ function schedule(l: Listener) {
 }
 
 function connect() {
+	retryTimer = undefined;
 	const ws = new WebSocket(`${PUBLIC_API_URL.replace(/^http/, 'ws')}/api/events`);
 	socket = ws;
 

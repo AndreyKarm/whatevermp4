@@ -24,6 +24,9 @@ func main() {
 	defer stop()
 
 	cfg := config.Load()
+	if err := cfg.Check(); err != nil {
+		log.Fatal(err)
+	}
 	pool, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatal(err)
@@ -45,7 +48,8 @@ func main() {
 	_, _ = pool.Exec(ctx, `UPDATE jobs SET status='queued' WHERE status='running'`)
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
+	go janitor(ctx, &wg, pool, st)
 	go loop(ctx, &wg, pool, []string{"process"}, func(ctx context.Context, p json.RawMessage) error {
 		var in struct {
 			MediaID string `json:"mediaId"`
@@ -114,6 +118,40 @@ func loop(ctx context.Context, wg *sync.WaitGroup, pool *pgxpool.Pool, types []s
 			continue
 		}
 		_ = jobs.Done(context.Background(), pool, j.ID)
+	}
+}
+
+// janitor runs hourly: it removes uploads abandoned for a day (with their
+// stored parts) and finished jobs older than a week.
+func janitor(ctx context.Context, wg *sync.WaitGroup, pool *pgxpool.Pool, st *storage.Storage) {
+	defer wg.Done()
+	for ctx.Err() == nil {
+		rows, err := pool.Query(ctx, `
+			DELETE FROM media_files
+			WHERE status='uploading' AND created_at < now() - interval '1 day'
+			RETURNING id, raw_key`)
+		if err == nil {
+			var stale [][2]string
+			for rows.Next() {
+				var id, rawKey string
+				if rows.Scan(&id, &rawKey) == nil {
+					stale = append(stale, [2]string{id, rawKey})
+				}
+			}
+			rows.Close()
+			for _, s := range stale {
+				log.Printf("janitor: removing abandoned upload %s", s[0])
+				st.DeleteMedia(ctx, s[0], s[1])
+			}
+		} else if ctx.Err() == nil {
+			log.Printf("janitor: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+			DELETE FROM jobs
+			WHERE status IN ('done','failed') AND created_at < now() - interval '7 days'`); err != nil && ctx.Err() == nil {
+			log.Printf("janitor: %v", err)
+		}
+		sleep(ctx, time.Hour)
 	}
 }
 

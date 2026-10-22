@@ -56,23 +56,28 @@ func New(ctx context.Context, cfg config.Config) (*Storage, error) {
 		bucket:  cfg.S3Bucket,
 	}
 	_, _ = st.client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: &cfg.S3Bucket})
-	// Browsers PUT multipart parts directly and need the ETag header back.
-	if len(cfg.AllowedOrigins) > 0 {
-		_, err := st.client.PutBucketCors(ctx, &s3.PutBucketCorsInput{
-			Bucket: &cfg.S3Bucket,
-			CORSConfiguration: &types.CORSConfiguration{CORSRules: []types.CORSRule{{
-				AllowedOrigins: cfg.AllowedOrigins,
-				AllowedMethods: []string{"GET", "PUT"},
-				AllowedHeaders: []string{"*"},
-				ExposeHeaders:  []string{"ETag"},
-				MaxAgeSeconds:  aws.Int32(3600),
-			}}},
-		})
-		if err != nil {
-			log.Printf("set bucket cors: %v", err)
-		}
-	}
 	return st, nil
+}
+
+// SetCORS lets browsers from origins PUT multipart parts directly and read
+// the ETag header back. Only the API calls this: it owns ALLOWED_ORIGINS,
+// and a second writer (the worker has no origins configured) would replace
+// the rule with its defaults depending on which process started last.
+func (s *Storage) SetCORS(ctx context.Context, origins []string) error {
+	if len(origins) == 0 {
+		return nil
+	}
+	_, err := s.client.PutBucketCors(ctx, &s3.PutBucketCorsInput{
+		Bucket: &s.bucket,
+		CORSConfiguration: &types.CORSConfiguration{CORSRules: []types.CORSRule{{
+			AllowedOrigins: origins,
+			AllowedMethods: []string{"GET", "PUT"},
+			AllowedHeaders: []string{"*"},
+			ExposeHeaders:  []string{"ETag"},
+			MaxAgeSeconds:  aws.Int32(3600),
+		}}},
+	})
+	return err
 }
 
 func (s *Storage) CreateMultipart(ctx context.Context, key, contentType string) (string, error) {
@@ -113,6 +118,41 @@ func (s *Storage) PresignDownload(ctx context.Context, key, filename string) (st
 		return "", err
 	}
 	return req.URL, nil
+}
+
+// DeleteMedia removes everything stored for a media row: the original, any
+// unfinished upload of it, and the transcoded output (which can exist even
+// before hls_key is set, e.g. after a failed process). Best effort: errors
+// are logged, the DB row is already gone.
+func (s *Storage) DeleteMedia(ctx context.Context, mediaID, rawKey string) {
+	for _, err := range []error{
+		s.AbortMultipartUploads(ctx, "raw/"+mediaID+"/"),
+		s.DeleteKey(ctx, rawKey),
+		s.DeletePrefix(ctx, "hls/"+mediaID),
+	} {
+		if err != nil {
+			log.Printf("delete media %s: %v", mediaID, err)
+		}
+	}
+}
+
+// AbortMultipartUploads cancels unfinished multipart uploads under prefix,
+// releasing the parts already stored for them.
+func (s *Storage) AbortMultipartUploads(ctx context.Context, prefix string) error {
+	out, err := s.client.ListMultipartUploads(ctx, &s3.ListMultipartUploadsInput{
+		Bucket: &s.bucket, Prefix: &prefix,
+	})
+	if err != nil {
+		return err
+	}
+	for _, u := range out.Uploads {
+		if _, err := s.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+			Bucket: &s.bucket, Key: u.Key, UploadId: u.UploadId,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Storage) CompleteMultipart(ctx context.Context, key, uploadID string, parts []Part) error {

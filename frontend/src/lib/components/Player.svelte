@@ -47,6 +47,8 @@
 	let stalled = $state(false);
 	// Browsers block play() until the user interacts with the page.
 	let needsGesture = $state(false);
+	// Set when hls.js gives up; shown instead of the controls' overlays.
+	let loadError = $state<string | null>(null);
 	// While the seek bar is being dragged, show the drag position instead of the playhead.
 	let dragTime = $state<number | null>(null);
 	// Last buffering flag sent, to avoid spamming the server.
@@ -78,6 +80,19 @@
 			h.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
 				playingHeight = h.levels[data.level]?.height ?? 0;
 			});
+			// hls.js stops on fatal errors; network and media errors are usually
+			// recoverable (a dropped connection, a decoder hiccup).
+			let mediaRecoveries = 0;
+			h.on(Hls.Events.ERROR, (_, data) => {
+				if (!data.fatal) return;
+				if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+					setTimeout(() => h.startLoad(), 2000);
+				} else if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRecoveries++ < 3) {
+					h.recoverMediaError();
+				} else {
+					loadError = 'Playback failed. Reload the page to try again.';
+				}
+			});
 			h.loadSource(src);
 			h.attachMedia(video);
 		} else if (video.canPlayType('application/vnd.apple.mpegurl')) {
@@ -94,7 +109,7 @@
 		video.addEventListener('pause', save);
 		window.addEventListener('pagehide', save);
 
-		const setRate = (r: number) => {
+		const applyRate = (r: number) => {
 			if (video.playbackRate !== r) video.playbackRate = r;
 		};
 
@@ -104,19 +119,23 @@
 		const sync = setInterval(() => {
 			const s = room.state;
 			if (!s || video.readyState === 0 || video.seeking) return;
-			const diff = room.getTargetPosition() - video.currentTime;
+			// The room clock keeps running past the end; don't chase it there.
+			const end = Number.isFinite(video.duration) ? video.duration : Infinity;
+			if (video.ended && room.getTargetPosition() >= end) return;
+			const target = Math.min(room.getTargetPosition(), end);
+			const diff = target - video.currentTime;
 			const off = Math.abs(diff);
 			if (!shouldPlay) {
-				if (off > 0.3) video.currentTime = room.getTargetPosition();
-				setRate(s.rate);
+				if (off > 0.3) video.currentTime = target;
+				applyRate(s.rate);
 			} else if (off > 1) {
-				video.currentTime = room.getTargetPosition();
-				setRate(s.rate);
+				video.currentTime = target;
+				applyRate(s.rate);
 			} else if (off > 0.25) {
 				// one fixed step to catch up / fall back, held until close enough
-				setRate(s.rate * (diff > 0 ? 1.05 : 0.95));
+				applyRate(s.rate * (diff > 0 ? 1.05 : 0.95));
 			} else if (off < 0.05) {
-				setRate(s.rate);
+				applyRate(s.rate);
 			}
 		}, 500);
 
@@ -284,6 +303,11 @@
 			hasPlayed = true;
 			setStalled(false);
 		}}
+		onended={() => {
+			setStalled(false);
+			// stop the room at the end instead of letting its clock run on
+			if (room.canControl && room.state?.playing) room.send({ type: 'pause' });
+		}}
 		onprogress={updateBuffered}
 		ontimeupdate={updateBuffered}
 		crossorigin="anonymous"
@@ -294,7 +318,9 @@
 		{/each}
 	</video>
 
-	{#if needsGesture}
+	{#if loadError}
+		<div class="overlay error">{loadError}</div>
+	{:else if needsGesture}
 		<button class="overlay gesture" onclick={resume}>
 			<span class="btn-round big"><Play size={24} fill="currentColor" /></span>
 			Click to join playback
@@ -430,6 +456,11 @@
 
 	.gesture {
 		background-color: rgb(0 0 0 / 0.6);
+	}
+
+	.error {
+		background-color: rgb(0 0 0 / 0.75);
+		color: var(--color-accent);
 	}
 
 	.big {
