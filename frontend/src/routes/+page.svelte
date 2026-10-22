@@ -1,210 +1,222 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { PUBLIC_API_URL } from '$app/env/public';
-	import { Film, Pencil, Play, Trash2 } from '@lucide/svelte';
-	import { apiFetch, apiPost } from '#lib/api.ts';
-	import type { MediaItem, MediaStatus, RoomItem, TorrentItem } from '#lib/types.ts';
-	import Uploader from '#lib/components/Uploader.svelte';
-	import Torrents from '#lib/components/Torrents.svelte';
-	import UrlImport from '#lib/components/UrlImport.svelte';
+	import { Film, Library, Pause, Play } from '@lucide/svelte';
+	import { apiFetch } from '#lib/api.ts';
+	import { onChange } from '#lib/events.ts';
+	import type { RoomItem } from '#lib/types.ts';
 
-	let media: MediaItem[] = $state([]);
-	let rooms: RoomItem[] = $state([]);
-	let torrents: TorrentItem[] = $state([]);
+	let rooms = $state<RoomItem[]>([]);
+	let loaded = $state(false);
 	let error = $state<string | null>(null);
 
-	const statusColor: Record<MediaStatus, string> = {
-		ready: 'text-primary',
-		processing: 'text-warn',
-		uploading: 'text-gray-400',
-		downloading: 'text-warn',
-		failed: 'text-accent'
-	};
+	// Rooms with people in them first, then most recently active.
+	const sorted = $derived(
+		[...rooms].sort((a, b) => (b.members?.length ?? 0) - (a.members?.length ?? 0))
+	);
 
 	async function load() {
 		try {
-			[media, rooms, torrents] = await Promise.all([
-				apiFetch<MediaItem[]>('/api/media'),
-				apiFetch<RoomItem[]>('/api/rooms'),
-				apiFetch<TorrentItem[]>('/api/torrents')
-			]);
+			rooms = await apiFetch<RoomItem[]>('/api/rooms');
 			error = null;
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			loaded = true;
 		}
 	}
 
 	onMount(() => {
 		load();
-		// Poll for upload/processing/torrent progress
-		const interval = setInterval(load, 5000);
-		return () => clearInterval(interval);
+		return onChange(['rooms', 'media_files'], load);
 	});
-
-	async function watch(item: MediaItem) {
-		try {
-			const { id } = await apiPost<{ id: string }>('/api/rooms', {
-				name: item.filename,
-				mediaId: item.id
-			});
-			goto(resolve('/rooms/[id]', { id }));
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
-		}
-	}
-
-	// Separate state so the 5s poll doesn't overwrite what is being typed.
-	let renaming = $state<{ id: string; value: string } | null>(null);
-
-	async function saveRename() {
-		if (!renaming) return;
-		const { id, value } = renaming;
-		renaming = null;
-		const filename = value.trim();
-		if (!filename || filename === media.find((m) => m.id === id)?.filename) return;
-		try {
-			await apiFetch(`/api/media/${id}`, { method: 'PATCH', body: JSON.stringify({ filename }) });
-			await load();
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
-		}
-	}
-
-	async function remove(item: MediaItem) {
-		if (!confirm(`Delete "${item.filename}"?`)) return;
-		try {
-			await apiFetch(`/api/media/${item.id}`, { method: 'DELETE' });
-			await load();
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
-		}
-	}
 </script>
 
-<main class="mx-auto w-full max-w-[75em] space-y-8 px-8 py-8">
-	<div class="flex flex-col justify-between gap-4 md:flex-row md:items-end">
+<svelte:head><title>Rooms · whatevermp4</title></svelte:head>
+
+<main class="container page">
+	<div class="page-head">
 		<div>
-			<h1 class="section-title">Library</h1>
-			<p class="text-sm text-muted">
-				Upload a video, paste an .m3u8 link or add a torrent, then watch it together.
-			</p>
+			<h1 class="section-title">Rooms</h1>
+			<p class="muted">Join a room to watch together, or start one from the library.</p>
 		</div>
-		<Uploader onuploaded={load} />
+		<a href={resolve('/library')} class="btn btn-primary"><Library size={16} /> Library</a>
 	</div>
 
-	{#if error}<p class="text-sm text-accent">{error}</p>{/if}
+	{#if error}<p class="error-text">{error}</p>{/if}
 
-	<div class="grid grid-cols-1 gap-8 lg:grid-cols-[1fr_20rem]">
-		<div class="grid grid-cols-2 content-start gap-6 md:grid-cols-3 xl:grid-cols-4">
-			{#each media as item (item.id)}
-				<article class="group flex min-w-0 flex-col gap-3">
-					<div class="relative isolate aspect-video overflow-hidden rounded-sm bg-secondary">
-						{#if item.status === 'ready' && item.posterKey && item.playbackUrl}
-							<img
-								src="{PUBLIC_API_URL}{item.playbackUrl}/poster.jpg"
-								alt=""
-								draggable="false"
-								class="h-full w-full object-cover transition-transform duration-300 group-hover:-translate-y-1 group-hover:scale-105"
-							/>
-						{:else}
-							<div class="flex h-full items-center justify-center text-muted">
+	{#if sorted.length}
+		<ul class="rooms">
+			{#each sorted as r (r.id)}
+				{@const members = r.members ?? []}
+				<li>
+					<a href={resolve('/rooms/[id]', { id: r.id })} class="room">
+						<div class="thumb">
+							{#if r.media?.posterUrl}
+								<img src="{PUBLIC_API_URL}{r.media.posterUrl}" alt="" draggable="false" />
+							{:else}
 								<Film size={32} />
-							</div>
-						{/if}
-						{#if item.season != null}
-							<span class="badge absolute top-2 right-2">S{item.season}E{item.episode}</span>
-						{/if}
-					</div>
-
-					<div class="flex min-w-0 flex-1 flex-col justify-between gap-2">
-						{#if renaming?.id === item.id}
-							<form
-								onsubmit={(e) => {
-									e.preventDefault();
-									saveRename();
-								}}
-							>
-								<input
-									class="input w-full px-2 py-1 text-xs"
-									maxlength="255"
-									aria-label="New name"
-									bind:value={renaming.value}
-									onkeydown={(e) => e.key === 'Escape' && (renaming = null)}
-									onblur={() => (renaming = null)}
-									{@attach (el) => {
-										el.focus();
-										el.select();
-									}}
-								/>
-							</form>
-						{:else}
-							<h3
-								class="line-clamp-2 text-xs leading-snug font-bold break-all uppercase"
-								title={item.filename}
-							>
-								{item.filename}
-							</h3>
-						{/if}
-						{#if item.error}
-							<p class="truncate text-xs text-accent" title={item.error}>{item.error}</p>
-						{/if}
-						<div class="flex items-center justify-between gap-2">
-							<div class="meta flex flex-col">
-								<span class={statusColor[item.status]}>{item.status}</span>
-								<span class="truncate normal-case">by {item.uploadedBy}</span>
-							</div>
-							<div class="flex items-center gap-1">
-								<button
-									class="btn-icon text-gray-500"
-									title="Rename"
-									onclick={() => (renaming = { id: item.id, value: item.filename })}
-								>
-									<Pencil size={16} />
-								</button>
-								<button
-									class="btn-icon delete text-gray-500"
-									title="Delete"
-									onclick={() => remove(item)}
-								>
-									<Trash2 size={16} />
-								</button>
-								{#if item.status === 'ready'}
-									<button class="btn-round" title="Watch together" onclick={() => watch(item)}>
-										<Play size={14} fill="currentColor" />
-									</button>
-								{/if}
-							</div>
+							{/if}
+							{#if members.length}
+								<span class="badge live">● {members.length} watching</span>
+							{/if}
 						</div>
-					</div>
-				</article>
-			{:else}
-				<p class="col-span-full text-muted">Nothing here yet. Upload a video or add a torrent.</p>
+						<div class="body">
+							<h2>{r.name}</h2>
+							<p class="now">
+								{#if r.media}
+									{#if r.state.playing}<Play size={12} fill="currentColor" />{:else}<Pause
+											size={12}
+											fill="currentColor"
+										/>{/if}
+									<span>{r.media.filename}</span>
+								{:else}
+									<span class="muted">Nothing selected</span>
+								{/if}
+							</p>
+							<ul class="watchers">
+								{#each members as m, i (i)}
+									<li class:host={m === r.ownerName}>{m}</li>
+								{:else}
+									<li class="empty">Nobody here right now</li>
+								{/each}
+							</ul>
+							<p class="meta">host: {r.ownerName}</p>
+						</div>
+					</a>
+				</li>
 			{/each}
+		</ul>
+	{:else if loaded && !error}
+		<div class="panel empty-state">
+			<Film size={40} />
+			<p>No rooms yet.</p>
+			<p class="muted">Pick a movie in the library and press play to start one.</p>
+			<a href={resolve('/library')} class="btn btn-primary">Open library</a>
 		</div>
-
-		<div class="space-y-6">
-			<section class="panel">
-				<h2 class="panel-title">Rooms</h2>
-				<ul class="space-y-2 text-sm">
-					{#each rooms as r (r.id)}
-						<li class="flex items-baseline justify-between gap-2">
-							<a
-								href={resolve('/rooms/[id]', { id: r.id })}
-								class="truncate font-semibold hover:text-primary hover:underline"
-							>
-								{r.name}
-							</a>
-							<span class="meta shrink-0 normal-case">by {r.ownerName}</span>
-						</li>
-					{:else}
-						<li class="text-xs text-muted">No rooms yet.</li>
-					{/each}
-				</ul>
-			</section>
-			<UrlImport onimported={load} />
-			<Torrents {torrents} onchange={load} />
-		</div>
-	</div>
+	{/if}
 </main>
+
+<style>
+	.rooms {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
+		gap: 1.5rem;
+	}
+
+	.room {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		overflow: hidden;
+		border-radius: var(--radius);
+		background-color: var(--color-secondary);
+		transition: transform 0.3s ease;
+	}
+
+	.room:hover {
+		color: inherit;
+		transform: translateY(-0.25rem);
+	}
+
+	.thumb {
+		position: relative;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		aspect-ratio: 16 / 9;
+		overflow: hidden;
+		background-color: #1c1c23;
+		color: var(--color-muted);
+	}
+
+	.thumb img {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		border-radius: 0;
+		transition: transform 0.3s ease;
+	}
+
+	.room:hover .thumb img {
+		transform: scale(1.05);
+	}
+
+	.live {
+		position: absolute;
+		top: 0.75rem;
+		left: 0.75rem;
+	}
+
+	.body {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+		gap: 0.5rem;
+		padding: 1rem 1.25rem 1.25rem;
+	}
+
+	h2 {
+		font-size: 15px;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		overflow-wrap: anywhere;
+	}
+
+	.now {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 13px;
+		color: var(--color-muted);
+	}
+
+	.now span {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.watchers {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+		margin-top: auto;
+		padding-top: 0.25rem;
+	}
+
+	.watchers li {
+		padding: 0.1rem 0.6rem;
+		border: 1px solid var(--color-border);
+		border-radius: 999px;
+		font-size: 12px;
+	}
+
+	.watchers li.host {
+		border-color: var(--color-primary);
+		color: var(--color-primary);
+	}
+
+	.watchers li.empty {
+		border: none;
+		padding: 0;
+		color: var(--color-gray);
+	}
+
+	.empty-state {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 3rem 1.5rem;
+		text-align: center;
+		color: var(--color-muted);
+	}
+
+	.empty-state p:first-of-type {
+		color: var(--color-text);
+		font-weight: 700;
+		text-transform: uppercase;
+	}
+</style>

@@ -21,6 +21,15 @@ type RoomItem struct {
 	State            json.RawMessage `json:"state"`
 	UpdatedAt        time.Time       `json:"updatedAt"`
 	CreatedAt        time.Time       `json:"createdAt"`
+	// listRooms only: who is connected right now and what is selected
+	Members []string   `json:"members,omitempty"`
+	Media   *RoomMedia `json:"media,omitempty"`
+}
+
+type RoomMedia struct {
+	ID        string `json:"id"`
+	Filename  string `json:"filename"`
+	PosterURL string `json:"posterUrl,omitempty"`
 }
 
 func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
@@ -34,7 +43,9 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
+	live := s.hub.Live()
 	items := []RoomItem{}
+	mediaIDs := map[string]bool{}
 	for rows.Next() {
 		var rm RoomItem
 		if err := rows.Scan(
@@ -44,9 +55,68 @@ func (s *Server) listRooms(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		// The DB copy of state is flushed every 10s; prefer the hub's.
+		if l, ok := live[rm.ID]; ok {
+			rm.Members = l.Members
+			rm.State, _ = json.Marshal(l.State)
+		}
+		var st rooms.State
+		if json.Unmarshal(rm.State, &st) == nil && st.MediaID != "" {
+			rm.Media = &RoomMedia{ID: st.MediaID}
+			mediaIDs[st.MediaID] = true
+		}
 		items = append(items, rm)
 	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.fillRoomMedia(r, items, mediaIDs); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+// fillRoomMedia adds filename and poster URL to each room's selected media.
+func (s *Server) fillRoomMedia(r *http.Request, items []RoomItem, ids map[string]bool) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	list := make([]string, 0, len(ids))
+	for id := range ids {
+		list = append(list, id)
+	}
+	rows, err := s.db.Query(r.Context(), `
+		SELECT id, filename, status, poster_key FROM media_files WHERE id = ANY($1)`, list)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	found := map[string]RoomMedia{}
+	for rows.Next() {
+		var m RoomMedia
+		var status string
+		var poster *string
+		if err := rows.Scan(&m.ID, &m.Filename, &status, &poster); err != nil {
+			return err
+		}
+		if status == "ready" && poster != nil {
+			m.PosterURL = s.playbackBase(m.ID) + "/poster.jpg"
+		}
+		found[m.ID] = m
+	}
+	for i := range items {
+		if items[i].Media == nil {
+			continue
+		}
+		if m, ok := found[items[i].Media.ID]; ok {
+			items[i].Media = &m
+		} else {
+			items[i].Media = nil // media was deleted
+		}
+	}
+	return rows.Err()
 }
 
 func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {

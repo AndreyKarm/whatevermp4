@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"liotom/whateverserver/internal/config"
+	"liotom/whateverserver/internal/events"
 	"liotom/whateverserver/internal/rooms"
 	"liotom/whateverserver/internal/storage"
 	"net/http"
@@ -18,6 +19,7 @@ type Server struct {
 	db  *pgxpool.Pool
 	st  *storage.Storage
 	hub *rooms.Hub
+	bus *events.Bus
 	cfg config.Config
 }
 
@@ -25,9 +27,10 @@ func NewRouter(
 	db *pgxpool.Pool,
 	st *storage.Storage,
 	hub *rooms.Hub,
+	bus *events.Bus,
 	cfg config.Config,
 ) http.Handler {
-	s := &Server{db: db, st: st, hub: hub, cfg: cfg}
+	s := &Server{db: db, st: st, hub: hub, bus: bus, cfg: cfg}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RealIP)
@@ -43,6 +46,8 @@ func NewRouter(
 
 	// WebSocket watch-party endpoint (nickname via ?nickname=)
 	r.Get("/api/rooms/{id}/ws", rooms.Handler(hub, cfg.AllowedOrigins))
+	// WebSocket change notifications for the library and rooms pages
+	r.Get("/api/events", s.handleEvents)
 
 	r.Route("/api", func(r chi.Router) {
 		// Media library
@@ -50,6 +55,7 @@ func NewRouter(
 		r.Get("/media/{id}", s.getMedia)
 		r.Patch("/media/{id}", s.updateMedia)
 		r.Delete("/media/{id}", s.deleteMedia)
+		r.Post("/media/{id}/reprocess", s.reprocessMedia)
 
 		// Direct S3 multipart uploads
 		r.Post("/uploads/init", s.initUpload)

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"liotom/whateverserver/internal/jobs"
 	"liotom/whateverserver/internal/storage"
 	"net/http"
 	"strings"
@@ -142,6 +143,27 @@ func (s *Server) updateMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// POST /api/media/{id}/reprocess re-runs the transcode from the stored original.
+func (s *Server) reprocessMedia(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	tag, err := s.db.Exec(r.Context(), `
+		UPDATE media_files SET status='processing', error=NULL
+		WHERE id=$1 AND status IN ('ready','failed')`, id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeErr(w, http.StatusConflict, "media not found or still being prepared")
+		return
+	}
+	if err := jobs.Enqueue(r.Context(), s.db, "process", map[string]string{"mediaId": id}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (s *Server) deleteMedia(w http.ResponseWriter, r *http.Request) {

@@ -56,9 +56,19 @@ func RunHLS(ctx context.Context, src, out string, p *Plan) error {
 	}
 
 	var vsm []string
-	if len(p.Audio) == 0 {
+	// ffmpeg only expands %v in the init filename when there are several
+	// variants; a single variant needs the literal name.
+	initName := "init_%v.mp4"
+	switch len(p.Audio) {
+	case 0:
 		vsm = append(vsm, "v:0,name:video")
-	} else {
+		initName = "init_video.mp4"
+	case 1:
+		// Mux the only audio track into the video segments: separate audio
+		// renditions have to be re-synced by the player after every seek.
+		vsm = append(vsm, "v:0,a:0,name:main")
+		initName = "init_main.mp4"
+	default:
 		vsm = append(vsm, "v:0,agroup:aud,name:video")
 		for i, a := range p.Audio {
 			e := fmt.Sprintf("a:%d,agroup:aud,language:%s,name:%s", i, a.Lang, a.Name)
@@ -74,7 +84,7 @@ func RunHLS(ctx context.Context, src, out string, p *Plan) error {
 		"-hls_segment_type", "fmp4", "-hls_flags", "independent_segments",
 		"-master_pl_name", "master.m3u8",
 		"-var_stream_map", strings.Join(vsm, " "),
-		"-hls_fmp4_init_filename", "init_%v.mp4",
+		"-hls_fmp4_init_filename", initName,
 		"-hls_segment_filename", filepath.Join(out, "seg_%v_%05d.m4s"),
 		filepath.Join(out, "stream_%v.m3u8"),
 	)

@@ -95,7 +95,8 @@ func (s *Server) createTorrent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) cancelTorrent(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	tag, err := s.db.Exec(r.Context(),
-		`UPDATE torrents SET status='cancelled' WHERE id=$1 AND status IN ('queued','downloading')`, id)
+		// cancelling a failed torrent just dismisses it from the downloads list
+		`UPDATE torrents SET status='cancelled' WHERE id=$1 AND status IN ('queued','downloading','failed')`, id)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

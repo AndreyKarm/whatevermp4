@@ -100,4 +100,8 @@ export interface RoomItem {
 	state: RoomState;
 	updatedAt: string;
 	createdAt: string;
+	/** GET /api/rooms only: nicknames connected right now */
+	members?: string[];
+	/** GET /api/rooms only: the selected media */
+	media?: { id: string; filename: string; posterUrl?: string };
 }

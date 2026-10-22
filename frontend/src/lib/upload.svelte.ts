@@ -9,21 +9,30 @@ interface InitResponse {
 	urls: string[];
 }
 
-export class S3Uploader {
+class S3Uploader {
 	/** 0..1 while an upload is running, null otherwise */
 	progress = $state<number | null>(null);
+	filename = $state('');
+	error = $state<string | null>(null);
+
+	get busy() {
+		return this.progress !== null;
+	}
 
 	async upload(file: File) {
-		const partsCount = Math.max(1, Math.ceil(file.size / PART_SIZE));
-		const { mediaId, uploadId, urls } = await apiPost<InitResponse>('/api/uploads/init', {
-			filename: file.name,
-			contentType: file.type,
-			parts: partsCount
-		});
-
-		const completedParts: { partNumber: number; etag: string }[] = [];
+		if (this.busy) throw new Error('An upload is already running');
+		this.filename = file.name;
+		this.error = null;
 		this.progress = 0;
 		try {
+			const partsCount = Math.max(1, Math.ceil(file.size / PART_SIZE));
+			const { mediaId, uploadId, urls } = await apiPost<InitResponse>('/api/uploads/init', {
+				filename: file.name,
+				contentType: file.type,
+				parts: partsCount
+			});
+
+			const completedParts: { partNumber: number; etag: string }[] = [];
 			for (let i = 0; i < partsCount; i += CONCURRENCY) {
 				const batch = Array.from(
 					{ length: Math.min(CONCURRENCY, partsCount - i) },
@@ -50,8 +59,14 @@ export class S3Uploader {
 				uploadId,
 				parts: completedParts.sort((a, b) => a.partNumber - b.partNumber)
 			});
+		} catch (err) {
+			this.error = err instanceof Error ? err.message : 'Upload failed';
+			throw err;
 		} finally {
 			this.progress = null;
 		}
 	}
 }
+
+/** One shared uploader, so progress survives closing the upload modal. */
+export const uploader = new S3Uploader();

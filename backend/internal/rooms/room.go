@@ -17,6 +17,8 @@ type Room struct {
 	holding bool
 	dirty   bool
 	clients map[*Client]struct{}
+
+	onChange func() // playback state changed (play/pause/media/rate)
 }
 
 func newRoom(id, owner string, everyone bool) *Room {
@@ -165,6 +167,9 @@ func (r *Room) handle(c *Client, in In) {
 	r.applyBufferLocked()
 	r.dirty = true
 	r.broadcastLocked(r.stateMsgLocked())
+	if r.onChange != nil {
+		r.onChange()
+	}
 }
 
 // persistSnapshot returns state to save if it changed since last call.

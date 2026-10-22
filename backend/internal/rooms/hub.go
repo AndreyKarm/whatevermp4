@@ -3,6 +3,7 @@ package rooms
 import (
 	"context"
 	"encoding/json"
+	"liotom/whateverserver/internal/events"
 	"log"
 	"sync"
 	"time"
@@ -13,12 +14,43 @@ import (
 
 type Hub struct {
 	db    *pgxpool.Pool
+	bus   *events.Bus
 	mu    sync.Mutex
 	rooms map[string]*Room
 }
 
-func NewHub(db *pgxpool.Pool) *Hub {
-	return &Hub{db: db, rooms: map[string]*Room{}}
+func NewHub(db *pgxpool.Pool, bus *events.Bus) *Hub {
+	return &Hub{db: db, bus: bus, rooms: map[string]*Room{}}
+}
+
+// LiveRoom is the in-memory view of a loaded room, fresher than the DB copy.
+type LiveRoom struct {
+	Members []string
+	State   State
+}
+
+// Live returns members and current state of every loaded room.
+func (h *Hub) Live() map[string]LiveRoom {
+	h.mu.Lock()
+	list := make([]*Room, 0, len(h.rooms))
+	for _, r := range h.rooms {
+		list = append(list, r)
+	}
+	h.mu.Unlock()
+
+	out := make(map[string]LiveRoom, len(list))
+	for _, r := range list {
+		r.mu.Lock()
+		names := make([]string, 0, len(r.clients))
+		for c := range r.clients {
+			names = append(names, c.Nickname)
+		}
+		st := r.state
+		st.Position, st.UpdatedAt = r.posLocked(nowMs()), nowMs()
+		r.mu.Unlock()
+		out[r.ID] = LiveRoom{Members: names, State: st}
+	}
+	return out
 }
 
 // Join loads the room (if needed) and adds the client atomically,
@@ -37,6 +69,7 @@ func (h *Hub) Join(ctx context.Context, id string, c *Client) error {
 			return err
 		}
 		r = newRoom(id, owner, everyone)
+		r.onChange = func() { h.bus.Publish("rooms") }
 		_ = json.Unmarshal(raw, &r.state)
 		if r.state.Rate <= 0 {
 			r.state.Rate = 1
@@ -45,6 +78,7 @@ func (h *Hub) Join(ctx context.Context, id string, c *Client) error {
 		h.rooms[id] = r
 	}
 	r.join(c)
+	h.bus.Publish("rooms")
 	return nil
 }
 
@@ -82,6 +116,7 @@ func (h *Hub) Remove(id string) {
 func (h *Hub) Leave(c *Client) {
 	if c.room != nil {
 		c.room.leave(c)
+		h.bus.Publish("rooms")
 	}
 }
 

@@ -25,13 +25,19 @@ func CleanNickname(s string) string {
 	return s
 }
 
-func Handler(h *Hub, origins []string) http.HandlerFunc {
+// OriginPatterns turns ALLOWED_ORIGINS URLs into websocket.AcceptOptions host patterns.
+func OriginPatterns(origins []string) []string {
 	var patterns []string
 	for _, o := range origins {
 		if u, err := url.Parse(o); err == nil && u.Host != "" {
 			patterns = append(patterns, u.Host)
 		}
 	}
+	return patterns
+}
+
+func Handler(h *Hub, origins []string) http.HandlerFunc {
+	patterns := OriginPatterns(origins)
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := CleanNickname(r.URL.Query().Get("nickname"))
 

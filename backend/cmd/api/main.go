@@ -5,6 +5,7 @@ import (
 	"errors"
 	"liotom/whateverserver/internal/config"
 	"liotom/whateverserver/internal/db"
+	"liotom/whateverserver/internal/events"
 	"liotom/whateverserver/internal/httpapi"
 	"liotom/whateverserver/internal/rooms"
 	"liotom/whateverserver/internal/storage"
@@ -31,12 +32,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	hub := rooms.NewHub(pool)
+	bus := events.NewBus()
+	go events.Listen(ctx, cfg.DatabaseURL, bus)
+
+	hub := rooms.NewHub(pool, bus)
 	go hub.Run(ctx)
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,
-		Handler: httpapi.NewRouter(pool, st, hub, cfg),
+		Handler: httpapi.NewRouter(pool, st, hub, bus, cfg),
 	}
 
 	go func() {

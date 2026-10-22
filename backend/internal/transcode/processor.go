@@ -61,6 +61,10 @@ func (p *Processor) Process(ctx context.Context, id string) error {
 		poster = &k
 	}
 
+	// Re-processing: drop the previous output, whose file names may differ.
+	if err := p.St.DeletePrefix(ctx, prefix); err != nil {
+		return err
+	}
 	// fonts/ lives inside out/, so it is uploaded with everything else
 	if err := p.St.UploadDir(ctx, prefix, out); err != nil {
 		return err

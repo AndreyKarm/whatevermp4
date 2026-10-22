@@ -1,49 +1,44 @@
 <script lang="ts">
-	import { S3Uploader } from '#lib/upload.svelte.ts';
+	import { uploader } from '#lib/upload.svelte.ts';
 
-	let { onuploaded }: { onuploaded?: () => void } = $props();
+	/** Called once the upload has started; progress continues in the library. */
+	let { onstarted }: { onstarted?: () => void } = $props();
 
-	const uploader = new S3Uploader();
-	let error = $state<string | null>(null);
-
-	async function handleFile(e: Event) {
+	function handleFile(e: Event) {
 		const input = e.target as HTMLInputElement;
 		const file = input.files?.[0];
 		if (!file) return;
-
-		error = null;
-		try {
-			await uploader.upload(file);
-			onuploaded?.();
-		} catch (err) {
-			error = err instanceof Error ? err.message : 'Upload failed';
-		} finally {
-			input.value = '';
-		}
+		// Errors are kept on `uploader.error` and shown in the downloads list.
+		uploader.upload(file).catch(() => {});
+		input.value = '';
+		onstarted?.();
 	}
 </script>
 
-<div class="panel w-full p-4 md:w-80">
-	<label class="flex flex-col gap-2">
-		<span class="label">
-			{#if uploader.progress !== null}
-				Uploading… {Math.round(uploader.progress * 100)}%
-			{:else}
-				Upload a video
-			{/if}
-		</span>
+<div class="tab">
+	<label class="field">
+		<span class="label">Video file</span>
 		<input
 			type="file"
 			accept="video/*,.mkv"
 			onchange={handleFile}
-			class="input w-full"
-			disabled={uploader.progress !== null}
+			class="input"
+			disabled={uploader.busy}
 		/>
 	</label>
-	{#if uploader.progress !== null}
-		<div class="progress mt-3">
-			<div style:width="{uploader.progress * 100}%"></div>
-		</div>
-	{/if}
-	{#if error}<p class="mt-2 text-xs text-accent">{error}</p>{/if}
+	<p class="muted">
+		{#if uploader.busy}
+			Wait for "{uploader.filename}" to finish uploading first.
+		{:else}
+			Uploads go straight to storage in 64 MB parts. Progress shows in the library.
+		{/if}
+	</p>
 </div>
+
+<style>
+	.tab {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+	}
+</style>
