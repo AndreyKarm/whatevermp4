@@ -87,7 +87,7 @@ export type RoomIn =
 	| { type: 'play' | 'seek'; position: number }
 	| { type: 'pause' }
 	| { type: 'rate'; rate: number }
-	| { type: 'change_media'; mediaId: string }
+	| { type: 'change_media'; mediaId: string; position?: number }
 	| { type: 'buffering'; buffering: boolean }
 	| { type: 'chat'; text: string }
 	| { type: 'ping'; t: number };

@@ -132,7 +132,32 @@ func (h *Hub) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			h.flush(ctx, true)
+			h.reap(ctx)
 		}
+	}
+}
+
+// emptyRoomGrace is how long a room may sit with nobody in it before it is
+// deleted. It covers page reloads and the creator's way from the library
+// into the room.
+const emptyRoomGrace = 60 * time.Second
+
+// reap deletes rooms nobody is watching: rooms that aren't loaded (an empty
+// room is evicted within 10s and its updated_at touched) and haven't been
+// touched for emptyRoomGrace. h.mu is held so no Join can load a room while
+// it is being deleted.
+func (h *Hub) reap(ctx context.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	loaded := make([]string, 0, len(h.rooms))
+	for id := range h.rooms {
+		loaded = append(loaded, id)
+	}
+	if _, err := h.db.Exec(ctx, `
+		DELETE FROM rooms
+		WHERE NOT (id = ANY($1)) AND updated_at < now() - make_interval(secs => $2)`,
+		loaded, emptyRoomGrace.Seconds()); err != nil {
+		log.Printf("reap rooms: %v", err)
 	}
 }
 
@@ -156,6 +181,11 @@ func (h *Hub) flush(ctx context.Context, evict bool) {
 			h.mu.Lock()
 			if r.empty() {
 				delete(h.rooms, r.ID)
+				// start the empty-room grace period (see reap)
+				if _, err := h.db.Exec(ctx,
+					`UPDATE rooms SET updated_at=now() WHERE id=$1`, r.ID); err != nil {
+					log.Printf("touch room %s: %v", r.ID, err)
+				}
 			}
 			h.mu.Unlock()
 		}

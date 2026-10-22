@@ -4,9 +4,11 @@
 	import { resolve } from '$app/paths';
 	import { browser } from '$app/env';
 	import { PUBLIC_API_URL } from '$app/env/public';
-	import { Film, Pencil, Play, Plus } from '@lucide/svelte';
+	import { Download, Film, Pencil, Play, Plus } from '@lucide/svelte';
 	import { apiFetch, apiPost } from '#lib/api.ts';
 	import { onChange } from '#lib/events.ts';
+	import { getProgress } from '#lib/progress.ts';
+	import { formatTime } from '#lib/time.ts';
 	import type { MediaItem, TorrentItem } from '#lib/types.ts';
 	import UploadModal from '#lib/components/UploadModal.svelte';
 	import MediaEditModal from '#lib/components/MediaEditModal.svelte';
@@ -88,11 +90,18 @@
 		};
 	});
 
+	// This viewer's saved positions (localStorage), re-read whenever the list reloads.
+	const progress = $derived(
+		browser ? new Map(media.map((m) => [m.id, getProgress(m.id)])) : new Map<string, null>()
+	);
+
 	async function watch(item: MediaItem) {
 		try {
 			const { id } = await apiPost<{ id: string }>('/api/rooms', {
 				name: item.filename,
-				mediaId: item.id
+				mediaId: item.id,
+				// the room starts where this host last stopped
+				position: getProgress(item.id) ?? 0
 			});
 			goto(resolve('/rooms/[id]', { id }));
 		} catch (e) {
@@ -131,6 +140,7 @@
 	{#if sorted.length}
 		<ul class="grid">
 			{#each sorted as item (item.id)}
+				{@const watched = progress.get(item.id)}
 				<li class="card">
 					<div class="thumb">
 						{#if item.status === 'ready' && item.posterKey && item.playbackUrl}
@@ -141,6 +151,11 @@
 						{#if item.season != null}
 							<span class="badge se">S{item.season}E{item.episode ?? '?'}</span>
 						{/if}
+						{#if watched && item.durationSec}
+							<div class="watched" title="Stopped at {formatTime(watched)}">
+								<div style:width="{(watched / item.durationSec) * 100}%"></div>
+							</div>
+						{/if}
 					</div>
 					<h3 title={item.filename}>{item.filename}</h3>
 					<div class="foot">
@@ -148,11 +163,27 @@
 							<span class="status-{item.status}">{item.status}</span>
 							<span class="by">by {item.uploadedBy}</span>
 						</div>
+						{#if item.status !== 'uploading' && item.status !== 'downloading'}
+							<!-- eslint-disable svelte/no-navigation-without-resolve -- API host, not an app route -->
+							<a
+								class="btn-icon edit"
+								title="Download original"
+								href="{PUBLIC_API_URL}/api/media/{item.id}/download"
+								download
+							>
+								<Download size={16} />
+							</a>
+							<!-- eslint-enable svelte/no-navigation-without-resolve -->
+						{/if}
 						<button class="btn-icon edit" title="Edit" onclick={() => (editingId = item.id)}>
 							<Pencil size={16} />
 						</button>
 						{#if item.status === 'ready'}
-							<button class="btn-round" title="Watch together" onclick={() => watch(item)}>
+							<button
+								class="btn-round"
+								title={watched ? `Resume from ${formatTime(watched)}` : 'Watch together'}
+								onclick={() => watch(item)}
+							>
 								<Play size={14} fill="currentColor" />
 							</button>
 						{/if}
@@ -224,23 +255,38 @@
 		border-radius: 0.2rem;
 		background-color: var(--color-secondary);
 		color: var(--color-muted);
+		transition: box-shadow 0.3s ease;
 	}
 
 	.thumb img {
 		width: 100%;
 		height: 100%;
 		object-fit: cover;
-		transition: transform 0.3s ease;
 	}
 
-	.card:hover .thumb img {
-		transform: translateY(-0.5em) scale(1.05);
+	.card:hover .thumb {
+		box-shadow: var(--glow);
 	}
 
 	.se {
 		position: absolute;
 		top: 0.5rem;
 		right: 0.5rem;
+	}
+
+	/* how far this viewer got, along the bottom of the poster */
+	.watched {
+		position: absolute;
+		right: 0;
+		bottom: 0;
+		left: 0;
+		height: 4px;
+		background-color: rgb(0 0 0 / 0.5);
+	}
+
+	.watched > div {
+		height: 100%;
+		background-color: var(--color-primary);
 	}
 
 	h3 {

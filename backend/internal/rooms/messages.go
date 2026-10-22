@@ -17,7 +17,7 @@ type Member struct {
 type In struct {
 	Type      string  `json:"type"`
 	MediaID   string  `json:"mediaId,omitempty"`
-	Position  float64 `json:"position,omitempty"`
+	Position  float64 `json:"position,omitempty"` // play, seek, change_media (start point)
 	Rate      float64 `json:"rate,omitempty"`
 	Text      string  `json:"text,omitempty"`
 	Buffering bool    `json:"buffering,omitempty"`

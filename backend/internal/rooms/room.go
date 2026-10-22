@@ -159,7 +159,8 @@ func (r *Room) handle(c *Client, in In) {
 		if in.MediaID == "" {
 			return
 		}
-		r.state = State{MediaID: in.MediaID, Rate: 1, UpdatedAt: nowMs()}
+		// position: where the controller last watched this media (their localStorage)
+		r.state = State{MediaID: in.MediaID, Position: pos, Rate: 1, UpdatedAt: nowMs()}
 	default:
 		return
 	}

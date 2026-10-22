@@ -13,18 +13,34 @@
 	} from '@lucide/svelte';
 	import type { MediaItem } from '#lib/types.ts';
 	import type { RoomSocket } from '#lib/room.svelte.ts';
+	import { saveProgress } from '#lib/progress.ts';
+	import { formatTime as fmt } from '#lib/time.ts';
 
 	let { item, room, apiUrl }: { item: MediaItem; room: RoomSocket; apiUrl: string } = $props();
 
 	const BACK = 5;
 	const FORWARD = 10;
+	// Preferred quality as a height ("720") or "auto", per viewer.
+	const QUALITY_KEY = 'quality';
+
+	let hls: Hls | null = null;
+	// Renditions hls.js found, best first; selecting one only affects this viewer.
+	let levels = $state<{ index: number; height: number }[]>([]);
+	let quality = $state(-1); // level index, -1 = auto
+	let playingHeight = $state(0); // what auto picked
+	// Only save the position once this viewer has really played something,
+	// so the initial 0:00 never overwrites a saved spot.
+	let hasPlayed = false;
 
 	let container: HTMLDivElement | undefined = $state();
 	let videoEl: HTMLVideoElement | undefined = $state();
 	let currentTime = $state(0);
 	let duration = $state(0);
-	let volume = $state(1);
-	let muted = $state(false);
+	// Volume and mute are per viewer and survive switching movies / reloads.
+	const SOUND_KEY = 'sound';
+	const sound = readSound();
+	let volume = $state(sound.volume);
+	let muted = $state(sound.muted);
 	let fullscreen = $state(false);
 	let buffered = $state<{ start: number; end: number }[]>([]);
 	// Local "no data to play" state (seeking, waiting for segments).
@@ -44,15 +60,39 @@
 
 	onMount(() => {
 		const video = videoEl!;
-		let hls: Hls | null = null;
 		const src = `${base}/master.m3u8`;
 		if (Hls.isSupported()) {
-			hls = new Hls();
-			hls.loadSource(src);
-			hls.attachMedia(video);
+			const h = new Hls();
+			hls = h;
+			h.on(Hls.Events.MANIFEST_PARSED, () => {
+				levels = h.levels
+					.map((l, index) => ({ index, height: l.height }))
+					.sort((a, b) => b.height - a.height);
+				const preferred = readQuality();
+				const match = levels.find((l) => l.height === preferred);
+				if (match) {
+					h.currentLevel = match.index;
+					quality = match.index;
+				}
+			});
+			h.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
+				playingHeight = h.levels[data.level]?.height ?? 0;
+			});
+			h.loadSource(src);
+			h.attachMedia(video);
 		} else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+			// Safari's native HLS picks the quality itself; no picker then.
 			video.src = src;
 		}
+
+		const save = () => {
+			if (hasPlayed) saveProgress(item.id, video.currentTime, video.duration || 0);
+		};
+		const saver = setInterval(() => {
+			if (!video.paused) save();
+		}, 5000);
+		video.addEventListener('pause', save);
+		window.addEventListener('pagehide', save);
 
 		const setRate = (r: number) => {
 			if (video.playbackRate !== r) video.playbackRate = r;
@@ -84,12 +124,59 @@
 		document.addEventListener('fullscreenchange', onFullscreen);
 
 		return () => {
+			save();
+			clearInterval(saver);
 			clearInterval(sync);
+			video.removeEventListener('pause', save);
+			window.removeEventListener('pagehide', save);
 			document.removeEventListener('fullscreenchange', onFullscreen);
 			hls?.destroy();
+			hls = null;
 			setBuffering(false);
 		};
 	});
+
+	function readSound(): { volume: number; muted: boolean } {
+		try {
+			const s = JSON.parse(localStorage.getItem(SOUND_KEY) ?? '{}');
+			return {
+				volume: typeof s.volume === 'number' ? Math.min(Math.max(s.volume, 0), 1) : 1,
+				muted: s.muted === true
+			};
+		} catch {
+			return { volume: 1, muted: false };
+		}
+	}
+
+	$effect(() => {
+		const s = { volume, muted };
+		try {
+			localStorage.setItem(SOUND_KEY, JSON.stringify(s));
+		} catch {
+			/* storage unavailable: the choice just isn't remembered */
+		}
+	});
+
+	function readQuality(): number | null {
+		try {
+			const v = Number(localStorage.getItem(QUALITY_KEY));
+			return v > 0 ? v : null;
+		} catch {
+			return null;
+		}
+	}
+
+	function setQuality(e: Event) {
+		const index = Number((e.target as HTMLSelectElement).value);
+		quality = index;
+		if (hls) hls.currentLevel = index; // -1 switches back to automatic
+		const height = levels.find((l) => l.index === index)?.height;
+		try {
+			localStorage.setItem(QUALITY_KEY, height ? String(height) : 'auto');
+		} catch {
+			/* storage unavailable: the choice just isn't remembered */
+		}
+	}
 
 	$effect(() => {
 		if (!videoEl) return;
@@ -126,9 +213,20 @@
 		else room.send({ type: 'play', position: videoEl.currentTime });
 	}
 
+	// Last seek we asked for: quick repeated skips build on it, because the
+	// playhead hasn't moved yet while the previous seek is in flight.
+	let lastSeek = { t: 0, at: 0 };
+
 	function seekTo(t: number) {
 		if (!room.canControl) return;
-		room.send({ type: 'seek', position: Math.min(Math.max(t, 0), duration || t) });
+		const target = Math.min(Math.max(t, 0), duration || t);
+		lastSeek = { t: target, at: Date.now() };
+		room.send({ type: 'seek', position: target });
+	}
+
+	function skip(delta: number) {
+		const base = Date.now() - lastSeek.at < 1500 ? lastSeek.t : currentTime;
+		seekTo(base + delta);
 	}
 
 	function setRate(e: Event) {
@@ -155,8 +253,8 @@
 		const handlers: Record<string, () => void> = {
 			' ': togglePlay,
 			k: togglePlay,
-			ArrowLeft: () => seekTo(currentTime - BACK),
-			ArrowRight: () => seekTo(currentTime + FORWARD),
+			ArrowLeft: () => skip(-BACK),
+			ArrowRight: () => skip(FORWARD),
 			f: toggleFullscreen,
 			m: () => (muted = !muted)
 		};
@@ -165,16 +263,6 @@
 			e.preventDefault();
 			h();
 		}
-	}
-
-	function fmt(t: number) {
-		if (!Number.isFinite(t)) return '0:00';
-		const s = Math.floor(t % 60)
-			.toString()
-			.padStart(2, '0');
-		const m = Math.floor(t / 60) % 60;
-		const h = Math.floor(t / 3600);
-		return h ? `${h}:${m.toString().padStart(2, '0')}:${s}` : `${m}:${s}`;
 	}
 </script>
 
@@ -192,7 +280,10 @@
 		onseeking={() => (stalled = true)}
 		onseeked={() => videoEl && videoEl.readyState >= 3 && (stalled = false)}
 		oncanplay={() => setStalled(false)}
-		onplaying={() => setStalled(false)}
+		onplaying={() => {
+			hasPlayed = true;
+			setStalled(false);
+		}}
 		onprogress={updateBuffered}
 		ontimeupdate={updateBuffered}
 		crossorigin="anonymous"
@@ -251,23 +342,29 @@
 						<Play size={14} fill="currentColor" />
 					{/if}
 				</button>
-				<button
-					class="btn-icon skip"
-					title="Back {BACK}s (←)"
-					onclick={() => seekTo(currentTime - BACK)}
-				>
+				<button class="btn-icon skip" title="Back {BACK}s (←)" onclick={() => skip(-BACK)}>
 					<RotateCcw size={18} /><span>{BACK}</span>
 				</button>
-				<button
-					class="btn-icon skip"
-					title="Forward {FORWARD}s (→)"
-					onclick={() => seekTo(currentTime + FORWARD)}
-				>
+				<button class="btn-icon skip" title="Forward {FORWARD}s (→)" onclick={() => skip(FORWARD)}>
 					<RotateCw size={18} /><span>{FORWARD}</span>
 				</button>
 			{/if}
 			<span class="time">{fmt(shownTime)} / {fmt(duration)}</span>
 			<span class="spacer"></span>
+			{#if levels.length > 1}
+				<select
+					class="rate"
+					aria-label="Quality"
+					title="Quality (only for you)"
+					value={quality}
+					onchange={setQuality}
+				>
+					<option value={-1}>Auto{playingHeight ? ` (${playingHeight}p)` : ''}</option>
+					{#each levels as l (l.index)}
+						<option value={l.index}>{l.height}p</option>
+					{/each}
+				</select>
+			{/if}
 			{#if room.canControl}
 				<select class="rate" aria-label="Speed" value={room.state?.rate ?? 1} onchange={setRate}>
 					{#each [0.5, 0.75, 1, 1.25, 1.5, 2] as r (r)}

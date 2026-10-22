@@ -2,10 +2,12 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"liotom/whateverserver/internal/config"
 	"log"
 	"mime"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -87,6 +89,26 @@ func (s *Storage) PresignPart(ctx context.Context, key, uploadID string, n int32
 	req, err := s.presign.PresignUploadPart(ctx, &s3.UploadPartInput{
 		Bucket: &s.bucket, Key: &key, UploadId: &uploadID, PartNumber: &n,
 	}, s3.WithPresignExpires(2*time.Hour))
+	if err != nil {
+		return "", err
+	}
+	return req.URL, nil
+}
+
+// PresignDownload returns a browser-reachable URL that downloads key as filename.
+func (s *Storage) PresignDownload(ctx context.Context, key, filename string) (string, error) {
+	// ASCII fallback plus the RFC 5987 form for non-ASCII names
+	ascii := strings.Map(func(r rune) rune {
+		if r < 0x20 || r > 0x7e || r == '"' || r == '\\' {
+			return '_'
+		}
+		return r
+	}, filename)
+	disp := fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`,
+		ascii, strings.ReplaceAll(url.QueryEscape(filename), "+", "%20"))
+	req, err := s.presign.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: &s.bucket, Key: &key, ResponseContentDisposition: &disp,
+	}, s3.WithPresignExpires(15*time.Minute))
 	if err != nil {
 		return "", err
 	}

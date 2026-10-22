@@ -27,26 +27,96 @@ func tail(s string, n int) string {
 	return s
 }
 
+// Lower renditions added under the source so each viewer can pick a quality.
+var ladder = []struct{ height, maxRateK int }{
+	{1080, 5000}, {720, 2800}, {480, 1400}, {360, 800},
+}
+
+const maxExtraRenditions = 2
+
+type variant struct {
+	name     string
+	height   int // 0: keep the source size
+	copy     bool
+	maxRateK int // 0: no cap (CRF only)
+}
+
+// variants returns the source quality first, then up to maxExtraRenditions
+// ladder steps below it.
+func variants(p *Plan) []variant {
+	name := "src"
+	if p.VideoHeight > 0 {
+		name = fmt.Sprintf("%dp", p.VideoHeight)
+	}
+	vs := []variant{{name: name, copy: p.VideoCopy}}
+	for _, l := range ladder {
+		if len(vs) > maxExtraRenditions || p.VideoHeight == 0 {
+			break
+		}
+		if l.height < p.VideoHeight {
+			vs = append(vs, variant{name: fmt.Sprintf("%dp", l.height), height: l.height, maxRateK: l.maxRateK})
+		}
+	}
+	return vs
+}
+
 // RunHLS writes out/master.m3u8, out/stream_{name}.m3u8, out/init_{name}.mp4, out/seg_{name}_*.m4s
 func RunHLS(ctx context.Context, src, out string, p *Plan) error {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
 	}
+	vs := variants(p)
 
-	args := []string{"-y", "-hide_banner", "-loglevel", "error", "-i", src,
-		"-map", fmt.Sprintf("0:%d", p.VideoIndex)}
-	for _, a := range p.Audio {
+	args := []string{"-y", "-hide_banner", "-loglevel", "error", "-i", src}
+	for range vs {
+		args = append(args, "-map", fmt.Sprintf("0:%d", p.VideoIndex))
+	}
+	// One audio track is muxed into every video variant (separate audio
+	// renditions have to be re-synced by the player after every seek);
+	// several tracks become alternate renditions shared by all variants.
+	var audio []AudioTrack
+	if len(p.Audio) == 1 {
+		for range vs {
+			audio = append(audio, p.Audio[0])
+		}
+	} else {
+		audio = p.Audio
+	}
+	for _, a := range audio {
 		args = append(args, "-map", fmt.Sprintf("0:a:%d", a.N))
 	}
 
-	if p.VideoCopy {
-		args = append(args, "-c:v", "copy")
-	} else {
-		args = append(args, "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-			"-pix_fmt", "yuv420p", "-profile:v", "high", "-sc_threshold", "0",
-			"-force_key_frames", "expr:gte(t,n_forced*6)")
+	// Encoded variants must cut segments where the copied one does, so the
+	// player can switch quality cleanly: reuse the source's keyframes.
+	keyframes := "expr:gte(t,n_forced*6)"
+	if vs[0].copy {
+		keyframes = "source"
 	}
-	for i, a := range p.Audio {
+	for i, v := range vs {
+		if v.copy {
+			args = append(args, fmt.Sprintf("-c:v:%d", i), "copy")
+			continue
+		}
+		crf := "20"
+		if v.maxRateK > 0 {
+			crf = "23"
+			args = append(args,
+				fmt.Sprintf("-maxrate:v:%d", i), fmt.Sprintf("%dk", v.maxRateK),
+				fmt.Sprintf("-bufsize:v:%d", i), fmt.Sprintf("%dk", 2*v.maxRateK))
+		}
+		if v.height > 0 {
+			args = append(args, fmt.Sprintf("-filter:v:%d", i), fmt.Sprintf("scale=-2:%d", v.height))
+		}
+		args = append(args,
+			fmt.Sprintf("-c:v:%d", i), "libx264",
+			fmt.Sprintf("-preset:v:%d", i), "veryfast",
+			fmt.Sprintf("-crf:v:%d", i), crf,
+			fmt.Sprintf("-pix_fmt:v:%d", i), "yuv420p",
+			fmt.Sprintf("-profile:v:%d", i), "high",
+			fmt.Sprintf("-sc_threshold:v:%d", i), "0",
+			fmt.Sprintf("-force_key_frames:v:%d", i), keyframes)
+	}
+	for i, a := range audio {
 		if a.Copy {
 			args = append(args, fmt.Sprintf("-c:a:%d", i), "copy")
 		} else {
@@ -56,20 +126,17 @@ func RunHLS(ctx context.Context, src, out string, p *Plan) error {
 	}
 
 	var vsm []string
-	// ffmpeg only expands %v in the init filename when there are several
-	// variants; a single variant needs the literal name.
-	initName := "init_%v.mp4"
-	switch len(p.Audio) {
-	case 0:
-		vsm = append(vsm, "v:0,name:video")
-		initName = "init_video.mp4"
-	case 1:
-		// Mux the only audio track into the video segments: separate audio
-		// renditions have to be re-synced by the player after every seek.
-		vsm = append(vsm, "v:0,a:0,name:main")
-		initName = "init_main.mp4"
-	default:
-		vsm = append(vsm, "v:0,agroup:aud,name:video")
+	for i, v := range vs {
+		switch len(p.Audio) {
+		case 0:
+			vsm = append(vsm, fmt.Sprintf("v:%d,name:%s", i, v.name))
+		case 1:
+			vsm = append(vsm, fmt.Sprintf("v:%d,a:%d,name:%s", i, i, v.name))
+		default:
+			vsm = append(vsm, fmt.Sprintf("v:%d,agroup:aud,name:%s", i, v.name))
+		}
+	}
+	if len(p.Audio) > 1 {
 		for i, a := range p.Audio {
 			e := fmt.Sprintf("a:%d,agroup:aud,language:%s,name:%s", i, a.Lang, a.Name)
 			if i == 0 {
@@ -77,6 +144,12 @@ func RunHLS(ctx context.Context, src, out string, p *Plan) error {
 			}
 			vsm = append(vsm, e)
 		}
+	}
+	// ffmpeg only expands %v in the init filename when there are several
+	// variants; a single variant needs the literal name.
+	initName := "init_%v.mp4"
+	if len(vsm) == 1 {
+		initName = "init_" + vs[0].name + ".mp4"
 	}
 
 	args = append(args,

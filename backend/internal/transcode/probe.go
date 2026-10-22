@@ -12,6 +12,7 @@ type Stream struct {
 	CodecType   string            `json:"codec_type"`
 	Profile     string            `json:"profile"`
 	PixFmt      string            `json:"pix_fmt"`
+	Height      int               `json:"height"`
 	Channels    int               `json:"channels"`
 	Tags        map[string]string `json:"tags"`
 	Disposition map[string]int    `json:"disposition"`

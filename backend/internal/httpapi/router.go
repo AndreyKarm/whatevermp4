@@ -56,6 +56,7 @@ func NewRouter(
 		r.Patch("/media/{id}", s.updateMedia)
 		r.Delete("/media/{id}", s.deleteMedia)
 		r.Post("/media/{id}/reprocess", s.reprocessMedia)
+		r.Get("/media/{id}/download", s.downloadMedia)
 
 		// Direct S3 multipart uploads
 		r.Post("/uploads/init", s.initUpload)

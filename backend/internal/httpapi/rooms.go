@@ -121,9 +121,10 @@ func (s *Server) fillRoomMedia(r *http.Request, items []RoomItem, ids map[string
 
 func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name             string `json:"name"`
-		MediaID          string `json:"mediaId"`
-		EveryoneControls bool   `json:"everyoneControls"`
+		Name             string  `json:"name"`
+		MediaID          string  `json:"mediaId"`
+		EveryoneControls bool    `json:"everyoneControls"`
+		Position         float64 `json:"position"` // start where the host last watched
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json")
@@ -138,7 +139,7 @@ func (s *Server) createRoom(w http.ResponseWriter, r *http.Request) {
 	st, _ := json.Marshal(rooms.State{
 		MediaID:   in.MediaID,
 		Playing:   false,
-		Position:  0,
+		Position:  max(in.Position, 0),
 		UpdatedAt: time.Now().UnixMilli(),
 		Rate:      1,
 	})

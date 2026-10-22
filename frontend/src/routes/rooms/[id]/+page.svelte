@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { apiFetch } from '#lib/api.ts';
 	import { onChange } from '#lib/events.ts';
+	import { getProgress } from '#lib/progress.ts';
 	import { nickname } from '#lib/nickname.svelte.ts';
 	import { PUBLIC_API_URL } from '$app/env/public';
 	import { RoomSocket } from '#lib/room.svelte.ts';
@@ -126,8 +127,11 @@
 					class="input picker"
 					aria-label="Change movie"
 					value={mediaId ?? ''}
-					onchange={(e) =>
-						room?.send({ type: 'change_media', mediaId: (e.target as HTMLSelectElement).value })}
+					onchange={(e) => {
+						const id = (e.target as HTMLSelectElement).value;
+						// start where whoever switched last watched it
+						room?.send({ type: 'change_media', mediaId: id, position: getProgress(id) ?? 0 });
+					}}
 				>
 					<option value="" disabled>Choose a movie…</option>
 					{#each library as m (m.id)}

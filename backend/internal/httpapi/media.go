@@ -6,6 +6,7 @@ import (
 	"liotom/whateverserver/internal/jobs"
 	"liotom/whateverserver/internal/storage"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -143,6 +144,37 @@ func (s *Server) updateMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// GET /api/media/{id}/download redirects to a presigned link for the original file.
+func (s *Server) downloadMedia(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var filename, rawKey, status string
+	err := s.db.QueryRow(r.Context(),
+		`SELECT filename, raw_key, status FROM media_files WHERE id=$1`, id).
+		Scan(&filename, &rawKey, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "media not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if status == "uploading" || status == "downloading" {
+		writeErr(w, http.StatusConflict, "the original file isn't stored yet")
+		return
+	}
+	// keep the stored container's extension (e.g. imports are .mkv)
+	if ext := path.Ext(rawKey); !strings.EqualFold(path.Ext(filename), ext) {
+		filename += ext
+	}
+	u, err := s.st.PresignDownload(r.Context(), rawKey, filename)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	http.Redirect(w, r, u, http.StatusFound)
 }
 
 // POST /api/media/{id}/reprocess re-runs the transcode from the stored original.

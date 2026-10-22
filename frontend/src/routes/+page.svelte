@@ -112,12 +112,12 @@
 		overflow: hidden;
 		border-radius: var(--radius);
 		background-color: var(--color-secondary);
-		transition: transform 0.3s ease;
+		transition: box-shadow 0.3s ease;
 	}
 
 	.room:hover {
 		color: inherit;
-		transform: translateY(-0.25rem);
+		box-shadow: var(--glow);
 	}
 
 	.thumb {
@@ -136,11 +136,6 @@
 		height: 100%;
 		object-fit: cover;
 		border-radius: 0;
-		transition: transform 0.3s ease;
-	}
-
-	.room:hover .thumb img {
-		transform: scale(1.05);
 	}
 
 	.live {
