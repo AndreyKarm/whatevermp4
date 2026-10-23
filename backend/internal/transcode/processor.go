@@ -38,7 +38,9 @@ func (p *Processor) reporter(ctx context.Context, id string) func(float64) {
 	}
 }
 
-func (p *Processor) Process(ctx context.Context, id string) error {
+// Process transcodes the media's original into HLS. It returns ErrCancelled
+// if the media was cancelled before or while it ran (see watchCancel).
+func (p *Processor) Process(ctx context.Context, id string) (err error) {
 	dir := filepath.Join(p.WorkDir, id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -47,7 +49,7 @@ func (p *Processor) Process(ctx context.Context, id string) error {
 
 	var rawKey string
 	var rawDeleted bool
-	err := p.DB.QueryRow(ctx, `SELECT raw_key, raw_deleted FROM media_files WHERE id=$1`, id).
+	err = p.DB.QueryRow(ctx, `SELECT raw_key, raw_deleted FROM media_files WHERE id=$1`, id).
 		Scan(&rawKey, &rawDeleted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // deleted before the job ran
@@ -58,7 +60,25 @@ func (p *Processor) Process(ctx context.Context, id string) error {
 	if rawDeleted {
 		return errors.New("the original was deleted")
 	}
-	_, _ = p.DB.Exec(ctx, `UPDATE media_files SET status='processing', progress=NULL WHERE id=$1`, id)
+	// Still wanted? A retry finds "failed" (set after the previous attempt);
+	// a re-process cancelled while queued is back to "ready".
+	tag, err := p.DB.Exec(ctx, `UPDATE media_files SET status='processing', progress=NULL
+		WHERE id=$1 AND status IN ('processing','failed')`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrCancelled
+	}
+
+	// Cancelling deletes the row, or puts a re-process back to "ready".
+	ctx, stop := watchCancel(ctx, p.DB, id, func(status string) bool { return status != "ready" })
+	defer stop()
+	defer func() {
+		if err != nil && cancelled(ctx) {
+			err = ErrCancelled
+		}
+	}()
 
 	// the stored original's extension; the display name may have lost it in a rename
 	src := filepath.Join(dir, "src"+path.Ext(rawKey))
@@ -103,6 +123,14 @@ func (p *Processor) Process(ctx context.Context, id string) error {
 		poster = &k
 	}
 
+	// Last chance to stop (subtitles, sprites and the poster only log their
+	// errors). From here on the output is replaced, which a cancel must not
+	// interrupt halfway: a late cancel just keeps the new version.
+	if cancelled(ctx) {
+		return ErrCancelled
+	}
+	ctx = context.WithoutCancel(ctx)
+
 	// Re-processing: drop the previous output, whose file names may differ.
 	if err := p.St.DeletePrefix(ctx, prefix); err != nil {
 		return err
@@ -127,7 +155,7 @@ func (p *Processor) Process(ctx context.Context, id string) error {
 	if thumbs != nil {
 		tj, _ = json.Marshal(thumbs)
 	}
-	tag, err := p.DB.Exec(ctx, `
+	tag, err = p.DB.Exec(ctx, `
 		UPDATE media_files SET status='ready', hls_key=$2, poster_key=$3,
 			duration_sec=$4, audio_tracks=$5, subtitle_tracks=$6, fonts=$7, thumbnails=$8,
 			raw_bytes=$9, hls_bytes=$10, progress=NULL, error=NULL

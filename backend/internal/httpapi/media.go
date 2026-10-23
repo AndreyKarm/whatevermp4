@@ -245,6 +245,59 @@ func (s *Server) reprocess(r *http.Request, ids []string) ([]string, error) {
 	return queued, tx.Commit(r.Context())
 }
 
+// POST /api/media/{id}/cancel stops an upload, download or transcode. Media
+// that was never ready is removed with everything stored for it; a
+// re-process goes back to ready with the previous output, which the worker
+// only replaces at the very end. The worker notices within a few seconds
+// (transcode.watchCancel) and stops its job.
+func (s *Server) cancelMedia(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	ctx := r.Context()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	var status, rawKey string
+	var hlsKey *string
+	err = tx.QueryRow(ctx,
+		`SELECT status, raw_key, hls_key FROM media_files WHERE id=$1 FOR UPDATE`, id).
+		Scan(&status, &rawKey, &hlsKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeErr(w, http.StatusNotFound, "media not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	reprocess := status == "processing" && hlsKey != nil
+	switch {
+	case reprocess:
+		_, err = tx.Exec(ctx,
+			`UPDATE media_files SET status='ready', progress=NULL, error=NULL WHERE id=$1`, id)
+	case status == "uploading" || status == "downloading" || status == "processing":
+		_, err = tx.Exec(ctx, `DELETE FROM media_files WHERE id=$1`, id)
+	default:
+		writeErr(w, http.StatusConflict, "nothing to cancel: the movie isn't uploading, downloading or processing")
+		return
+	}
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !reprocess {
+		s.st.DeleteMedia(ctx, id, rawKey)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) deleteMedia(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	n, err := s.deleteMediaRows(r, []string{id})

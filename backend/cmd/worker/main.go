@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"liotom/whateverserver/internal/config"
 	"liotom/whateverserver/internal/db"
 	"liotom/whateverserver/internal/jobs"
@@ -74,6 +75,10 @@ func main() {
 			return err
 		}
 		err := proc.Process(ctx, in.MediaID)
+		if errors.Is(err, transcode.ErrCancelled) {
+			log.Printf("process %s: cancelled", in.MediaID)
+			return nil // done, not failed: nothing to retry
+		}
 		if err != nil {
 			_, _ = pool.Exec(context.Background(),
 				`UPDATE media_files SET status='failed', error=$2, progress=NULL WHERE id=$1`,
@@ -105,6 +110,10 @@ func main() {
 			return err
 		}
 		err := proc.Import(ctx, in.MediaID, in.URL, in.Referer)
+		if errors.Is(err, transcode.ErrCancelled) {
+			log.Printf("import %s: cancelled", in.MediaID)
+			return nil
+		}
 		if err != nil && ctx.Err() == nil {
 			_, _ = pool.Exec(context.Background(),
 				`UPDATE media_files SET status='failed', error=$2, progress=NULL WHERE id=$1`,

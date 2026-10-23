@@ -168,6 +168,33 @@ func TestBulkMoveAndGuards(t *testing.T) {
 	}
 }
 
+// Cancelling a re-process puts the movie back to ready (the old output is
+// still there); finished or unknown movies have nothing to cancel. The
+// delete branch needs storage and is covered by the e2e tests.
+func TestCancelMedia(t *testing.T) {
+	a := newAPI(t)
+	a.exec(`INSERT INTO media_files (id, uploaded_by, filename, status, raw_key, hls_key, progress) VALUES
+		('re', 'ann', 're', 'processing', 'raw/re/a', 'hls/re', 0.4),
+		('done', 'ann', 'done', 'ready', 'raw/done/a', 'hls/done', NULL)`)
+
+	if code := a.do("ann", "POST", "/api/media/re/cancel", nil, nil); code != 204 {
+		t.Fatalf("cancel re-process: %d", code)
+	}
+	var status string
+	var progress *float64
+	_ = a.db.QueryRow(context.Background(),
+		`SELECT status, progress FROM media_files WHERE id='re'`).Scan(&status, &progress)
+	if status != "ready" || progress != nil {
+		t.Fatalf("after cancel: %s %v", status, progress)
+	}
+	if code := a.do("ann", "POST", "/api/media/done/cancel", nil, nil); code != 409 {
+		t.Fatalf("cancel a ready movie: %d", code)
+	}
+	if code := a.do("ann", "POST", "/api/media/nope/cancel", nil, nil); code != 404 {
+		t.Fatalf("cancel unknown: %d", code)
+	}
+}
+
 func TestPrivateRoomAccess(t *testing.T) {
 	a := newAPI(t)
 	var created struct{ ID, InviteCode string }

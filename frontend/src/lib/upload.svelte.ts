@@ -12,9 +12,16 @@ interface InitResponse {
  * PUTs one part to its presigned URL and resolves with the ETag. Uses XHR
  * rather than fetch because only XHR reports upload progress.
  */
-function putPart(url: string, blob: Blob, onProgress: (loaded: number) => void): Promise<string> {
+function putPart(
+	url: string,
+	blob: Blob,
+	onProgress: (loaded: number) => void,
+	onStart: (xhr: XMLHttpRequest) => void
+): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const xhr = new XMLHttpRequest();
+		onStart(xhr);
+		xhr.onabort = () => reject(new Error('Upload cancelled'));
 		xhr.open('PUT', url);
 		xhr.upload.onprogress = (e) => onProgress(e.loaded);
 		xhr.onload = () => {
@@ -46,8 +53,19 @@ class S3Uploader {
 	/** Files waiting for the running upload to finish (e.g. several dropped at once). */
 	queue = $state<{ file: File; folderId: string | null }[]>([]);
 
+	// The running upload's part requests, aborted by cancel().
+	#xhrs: XMLHttpRequest[] = [];
+	#cancelled = false;
+
 	get busy() {
 		return this.progress !== null;
+	}
+
+	/** Stops the running upload; its media row is deleted like after a failure. */
+	cancel() {
+		if (!this.busy) return;
+		this.#cancelled = true;
+		for (const xhr of this.#xhrs) xhr.abort();
 	}
 
 	/** Uploads the files one after another; returns at once. */
@@ -71,6 +89,11 @@ class S3Uploader {
 		this.mediaId = null;
 		this.error = null;
 		this.progress = 0;
+		this.#cancelled = false;
+		this.#xhrs = [];
+		const stopIfCancelled = () => {
+			if (this.#cancelled) throw new Error('Upload cancelled');
+		};
 		let mediaId: string | null = null;
 		try {
 			const partsCount = Math.max(1, Math.ceil(file.size / PART_SIZE));
@@ -98,26 +121,35 @@ class S3Uploader {
 					batch.map(async (idx) => {
 						const start = idx * PART_SIZE;
 						const blob = file.slice(start, Math.min(file.size, start + PART_SIZE));
+						stopIfCancelled();
 						// presigned just in time, so slow uploads never hold an expired URL
 						const { url } = await apiPost<{ url: string }>(`/api/uploads/${mediaId}/presign`, {
 							uploadId,
 							partNumber: idx + 1
 						});
-						const etag = await putPart(url, blob, (loaded) => {
-							sent[idx] = loaded;
-							report();
-						});
+						stopIfCancelled();
+						const etag = await putPart(
+							url,
+							blob,
+							(loaded) => {
+								sent[idx] = loaded;
+								report();
+							},
+							(xhr) => this.#xhrs.push(xhr)
+						);
 						completedParts.push({ partNumber: idx + 1, etag });
 					})
 				);
 			}
 
+			stopIfCancelled();
 			await apiPost(`/api/uploads/${mediaId}/complete`, {
 				uploadId,
 				parts: completedParts.sort((a, b) => a.partNumber - b.partNumber)
 			});
 		} catch (err) {
-			this.error = err instanceof Error ? err.message : 'Upload failed';
+			// a cancel isn't an error worth showing
+			this.error = this.#cancelled ? null : err instanceof Error ? err.message : 'Upload failed';
 			// Don't leave a stuck "uploading" entry; deleting it also aborts the
 			// S3 upload. Best effort: the worker's janitor catches what this misses.
 			if (mediaId) apiFetch(`/api/media/${mediaId}`, { method: 'DELETE' }).catch(() => {});
@@ -125,6 +157,7 @@ class S3Uploader {
 		} finally {
 			this.progress = null;
 			this.mediaId = null;
+			this.#xhrs = [];
 		}
 	}
 }

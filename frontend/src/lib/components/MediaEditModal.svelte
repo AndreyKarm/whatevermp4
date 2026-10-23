@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { FileX, Play, RefreshCw, Trash2 } from '@lucide/svelte';
+	import { CircleX, FileX, Play, RefreshCw, Trash2 } from '@lucide/svelte';
 	import { apiFetch } from '#lib/api.ts';
 	import { formatBytes } from '#lib/bytes.ts';
 	import { folderOptions } from '#lib/folders.ts';
+	import { uploader } from '#lib/upload.svelte.ts';
 	import type { Folder, MediaItem } from '#lib/types.ts';
 	import Modal from './Modal.svelte';
 
@@ -29,6 +30,24 @@
 		if (item.hlsBytes != null) parts.push(`Stream ${formatBytes(item.hlsBytes)}`);
 		return parts.join(' · ');
 	});
+
+	// Uploading, downloading or processing: the only action is to stop it.
+	const working = $derived(
+		item?.status === 'uploading' || item?.status === 'downloading' || item?.status === 'processing'
+	);
+	// A re-process keeps the previous version when cancelled; anything else is removed.
+	const reprocessing = $derived(item?.status === 'processing' && !!item.hlsKey);
+	const uploadingHere = $derived(!!item && uploader.busy && uploader.mediaId === item.id);
+	const progress = $derived(uploadingHere ? uploader.progress : (item?.progress ?? null));
+	const cancelLabel = $derived(
+		item?.status === 'uploading'
+			? 'Cancel upload'
+			: item?.status === 'downloading'
+				? 'Cancel download'
+				: reprocessing
+					? 'Cancel re-process'
+					: 'Cancel processing'
+	);
 
 	let filename = $state('');
 	let folderId = $state('');
@@ -107,6 +126,24 @@
 		run(() => apiFetch(`/api/media/${id}/delete-original`, { method: 'POST' }), false);
 	}
 
+	function cancelWork() {
+		if (!item) return;
+		if (
+			!reprocessing &&
+			!confirm(`Stop and remove "${item.filename}"? Everything stored for it is deleted.`)
+		)
+			return;
+		if (uploadingHere) {
+			// this browser is sending it: stop the parts too (the row goes with them)
+			uploader.cancel();
+			onclose();
+			return;
+		}
+		const id = item.id;
+		// a cancelled re-process stays, back to its previous version
+		run(() => apiFetch(`/api/media/${id}/cancel`, { method: 'POST' }), !reprocessing);
+	}
+
 	function remove() {
 		if (!item) return;
 		if (!confirmDelete) {
@@ -118,7 +155,7 @@
 	}
 </script>
 
-<Modal open={!!item} title="Edit movie" width="30rem" {onclose}>
+<Modal open={!!item} title="Edit movie" width="32rem" {onclose}>
 	{#if item}
 		<form class="form" onsubmit={save}>
 			<label class="field">
@@ -145,48 +182,76 @@
 				</label>
 			</div>
 			<p class="muted">Season and episode set the order when the library is sorted by episode.</p>
-			<div class="actions">
-				<button type="button" class="btn btn-outline" onclick={onclose}>Cancel</button>
+
+			<section class="state" aria-label="Status and actions">
+				<div class="status">
+					<span class="meta status-{item.status}">
+						{item.status}{#if working && progress != null}&nbsp;{Math.round(progress * 100)}%{/if}
+					</span>
+					{#if sizeInfo}<span class="meta sizes">{sizeInfo}</span>{/if}
+				</div>
+				{#if working}
+					<div class="progress" class:indeterminate={progress == null}>
+						<div style:width={progress != null ? `${progress * 100}%` : undefined}></div>
+					</div>
+				{/if}
+				{#if item.error}<p class="error-text">Last error: {item.error}</p>{/if}
+
+				<div class="actions">
+					{#if working}
+						<button type="button" class="btn btn-danger" disabled={busy} onclick={cancelWork}>
+							<CircleX size={14} />
+							{cancelLabel}
+						</button>
+					{:else}
+						{#if item.status === 'ready'}
+							<button
+								type="button"
+								class="btn btn-outline"
+								disabled={busy}
+								onclick={() => item && onwatch(item)}
+							>
+								<Play size={14} /> Watch together
+							</button>
+						{/if}
+						{#if !item.rawDeleted}
+							<button
+								type="button"
+								class="btn btn-outline"
+								disabled={busy}
+								title="Transcode again from the original file"
+								onclick={reprocess}
+							>
+								<RefreshCw size={14} /> Re-process
+							</button>
+						{/if}
+						{#if item.status === 'ready' && !item.rawDeleted}
+							<button
+								type="button"
+								class="btn btn-outline"
+								disabled={busy}
+								title="Free the space of the uploaded original; the movie keeps playing"
+								onclick={deleteOriginal}
+							>
+								<FileX size={14} /> Delete original
+							</button>
+						{/if}
+					{/if}
+				</div>
+			</section>
+
+			{#if error}<p class="error-text">{error}</p>{/if}
+
+			<footer class="footer">
+				<button type="button" class="btn btn-danger" disabled={busy} onclick={remove}>
+					<Trash2 size={14} />
+					{confirmDelete ? 'Click again to delete' : 'Delete'}
+				</button>
+				<span class="spacer"></span>
+				<button type="button" class="btn btn-outline" onclick={onclose}>Close</button>
 				<button class="btn btn-primary" disabled={busy}>Save</button>
-			</div>
+			</footer>
 		</form>
-
-		<hr />
-
-		<div class="more">
-			{#if item.status === 'ready'}
-				<button class="btn btn-outline" disabled={busy} onclick={() => item && onwatch(item)}>
-					<Play size={14} /> Watch together
-				</button>
-			{/if}
-			{#if (item.status === 'ready' || item.status === 'failed') && !item.rawDeleted}
-				<button
-					class="btn btn-outline"
-					disabled={busy}
-					title="Transcode again from the original file"
-					onclick={reprocess}
-				>
-					<RefreshCw size={14} /> Re-process
-				</button>
-			{/if}
-			{#if item.status === 'ready' && !item.rawDeleted}
-				<button
-					class="btn btn-outline"
-					disabled={busy}
-					title="Free the space of the uploaded original; the movie keeps playing"
-					onclick={deleteOriginal}
-				>
-					<FileX size={14} /> Delete original
-				</button>
-			{/if}
-			<button class="btn btn-danger" disabled={busy} onclick={remove}>
-				<Trash2 size={14} />
-				{confirmDelete ? 'Click again to delete' : 'Delete'}
-			</button>
-		</div>
-		{#if sizeInfo}<p class="meta">{sizeInfo}</p>{/if}
-		{#if item.error}<p class="error-text">Last error: {item.error}</p>{/if}
-		{#if error}<p class="error-text">{error}</p>{/if}
 	{/if}
 </Modal>
 
@@ -203,22 +268,70 @@
 		gap: 1rem;
 	}
 
-	.actions {
+	/* status, progress and what can be done with the movie, between two rules */
+	.state {
 		display: flex;
-		justify-content: flex-end;
+		flex-direction: column;
 		gap: 0.75rem;
-	}
-
-	hr {
-		width: 100%;
-		margin: 0;
-		border: none;
+		padding: 1rem 0;
 		border-top: 1px solid var(--color-border);
+		border-bottom: 1px solid var(--color-border);
 	}
 
-	.more {
+	.status {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.25rem 1rem;
+	}
+
+	.status .meta {
+		font-size: 11px;
+	}
+
+	.sizes {
+		text-transform: none;
+	}
+
+	.indeterminate > div {
+		width: 30%;
+		animation: slide 1.2s ease-in-out infinite;
+	}
+
+	@keyframes slide {
+		from {
+			transform: translateX(-100%);
+		}
+		to {
+			transform: translateX(340%);
+		}
+	}
+
+	.actions {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.5rem;
+	}
+
+	.actions:empty {
+		display: none;
+	}
+
+	.actions .btn {
+		flex: 1 1 0;
+		padding: 0.55rem 0.75rem;
+		font-size: 12px;
+	}
+
+	.footer {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem;
+	}
+
+	.spacer {
+		flex: 1;
 	}
 </style>

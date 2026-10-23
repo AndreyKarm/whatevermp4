@@ -57,6 +57,7 @@ func NewRouter(
 		r.Delete("/media/{id}", s.deleteMedia)
 		r.Post("/media/{id}/reprocess", s.reprocessMedia)
 		r.Post("/media/{id}/delete-original", s.deleteOriginal)
+		r.Post("/media/{id}/cancel", s.cancelMedia)
 		r.Get("/media/{id}/download", s.downloadMedia)
 
 		// Library folders (series, seasons, …)

@@ -86,6 +86,43 @@ test('dropping a file onto the library uploads it into the open folder', async (
 	await page.context().close();
 });
 
+test('edit modal: actions for a ready movie, and cancelling an upload removes it', async ({
+	browser
+}) => {
+	// an upload that never sends its parts stays "uploading"
+	await api(nick, 'POST', '/api/uploads/init', {
+		filename: 'Stuck.Upload.mp4',
+		contentType: 'video/mp4'
+	});
+	const page = await userPage(browser, nick);
+	await page.goto('/library');
+	const modal = page.locator('dialog[open]');
+
+	const ready = page.locator('li.card', { hasText: 'Test.Show.S01E01.mp4' });
+	await ready.getByTitle('Edit').click();
+	const actions = modal.locator('.actions');
+	const footer = modal.locator('footer');
+	for (const name of ['Watch together', 'Re-process', 'Delete original']) {
+		await expect(actions.getByRole('button', { name, exact: true })).toBeVisible();
+	}
+	await expect(modal.getByRole('button', { name: /^Cancel/ })).toHaveCount(0);
+	// Delete sits left in the footer, Close and Save right
+	const x = async (name: string) =>
+		(await footer.getByRole('button', { name, exact: true }).boundingBox())!.x;
+	expect(await x('Delete')).toBeLessThan(await x('Close'));
+	expect(await x('Close')).toBeLessThan(await x('Save'));
+	await footer.getByRole('button', { name: 'Close' }).click();
+
+	const stuck = page.locator('li.card', { hasText: 'Stuck.Upload.mp4' });
+	await stuck.getByTitle('Edit').click();
+	await expect(modal.getByRole('button', { name: 'Watch together' })).toHaveCount(0);
+	page.once('dialog', (d) => d.accept());
+	await modal.getByRole('button', { name: 'Cancel upload' }).click();
+	await expect(page.locator('dialog[open]')).toHaveCount(0);
+	await expect(stuck).toHaveCount(0);
+	await page.context().close();
+});
+
 test('continue watching and the storage overview', async ({ browser }) => {
 	const media = await api<{ id: string; filename: string; uploadedBy: string }[]>(
 		nick,

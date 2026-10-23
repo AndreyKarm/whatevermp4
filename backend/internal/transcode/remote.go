@@ -37,10 +37,11 @@ func DownloadHLS(ctx context.Context, src, referer, dst string, duration float64
 }
 
 // Import downloads an HLS URL into the media's raw key and queues the
-// regular "process" job for it.
-func (p *Processor) Import(ctx context.Context, id, src, referer string) error {
+// regular "process" job for it. It returns ErrCancelled if the media was
+// cancelled (deleted) while downloading.
+func (p *Processor) Import(ctx context.Context, id, src, referer string) (err error) {
 	var rawKey string
-	err := p.DB.QueryRow(ctx, `SELECT raw_key FROM media_files WHERE id=$1`, id).Scan(&rawKey)
+	err = p.DB.QueryRow(ctx, `SELECT raw_key FROM media_files WHERE id=$1`, id).Scan(&rawKey)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil // deleted before the job ran
 	}
@@ -48,6 +49,15 @@ func (p *Processor) Import(ctx context.Context, id, src, referer string) error {
 		return err
 	}
 	_, _ = p.DB.Exec(ctx, `UPDATE media_files SET status='downloading', error=NULL, progress=NULL WHERE id=$1`, id)
+
+	// cancelling a download deletes the row
+	ctx, stop := watchCancel(ctx, p.DB, id, func(string) bool { return true })
+	defer stop()
+	defer func() {
+		if err != nil && cancelled(ctx) {
+			err = ErrCancelled
+		}
+	}()
 
 	dir := filepath.Join(p.WorkDir, "import-"+id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
