@@ -120,6 +120,13 @@ test('edit modal: actions for a ready movie, and cancelling an upload removes it
 	await modal.getByRole('button', { name: 'Cancel upload' }).click();
 	await expect(page.locator('dialog[open]')).toHaveCount(0);
 	await expect(stuck).toHaveCount(0);
+
+	// cards aren't draggable; the poster itself starts a room
+	await expect(ready).not.toHaveAttribute('draggable', 'true');
+	await ready.locator('.thumb').hover();
+	await expect(ready.locator('.play .btn-round')).toHaveCSS('opacity', '1');
+	await ready.getByRole('button', { name: 'Watch Test.Show.S01E01.mp4' }).click();
+	await expect(page).toHaveURL(/\/rooms\//);
 	await page.context().close();
 });
 

@@ -47,7 +47,7 @@ frontend/            SvelteKit 3 + Svelte 5 (runes), plain CSS (no Tailwind), ad
                      MediaEditModal, FolderModal, Downloads
     server/db/       drizzle schema.ts: source of truth for the DB schema (used only by drizzle-kit)
   src/routes/        / (continue watching, rooms with live viewers), /library (search/filters, select + bulk,
-                     drag and drop, add/edit modals), /library/storage (space per folder/movie),
+                     file drop uploads, play-on-poster cards, add/edit modals), /library/storage (space per folder/movie),
                      /rooms/[id] (player, members + sync status, queue, chat, host settings)
   e2e/               Playwright specs (+ fixtures/: two 12s test episodes)
 ```
@@ -159,8 +159,9 @@ E2E: `pnpm exec playwright install chromium` once. The tests run against a runni
 - Don't poll, and don't refetch whole lists on every event. Use `MediaList` for media. For other data, use `onEvents` to patch what the event names, or `onChange([...topics], load)` for small lists (folders, torrents). Return the unsubscribe from `onMount`/`$effect`. Room state and settings come over the room socket, not REST.
 - Modals use `Modal.svelte` (a native `<dialog>`). It focuses the first form field after `showModal()`, so don't autofocus inside modal content yourself (`showModal()` would override it).
 - Browser uploads PUT parts with XHR (not fetch) because only XHR reports upload progress; the `uploader` singleton exposes `progress`, `mediaId`, `size` and `queue` for the card overlay and the In progress list. Use `uploader.enqueue(files, folderId)`; `upload()` throws while another upload runs.
-- Hover highlight on cards is the `--ring` token (solid outline); library cards have none (the ring there marks selected cards and drop targets).
-- Library drag and drop: files from the desktop are recognised by the `Files` type and go to `uploader.enqueue`. Cards carry `application/x-whatever-media` (JSON ID list; the whole selection when the dragged card is selected) or `application/x-whatever-folder`; folder cards and breadcrumbs accept them.
+- Hover highlight on cards is the `--ring` token (solid outline); library cards have none (the ring there marks selected cards).
+- Library drag and drop is for uploads only: files dragged in from the desktop are recognised by the `Files` type and go to `uploader.enqueue`. Cards aren't draggable; movies move through Select (bulk) or the edit modal.
+- On a ready movie card, the whole poster is a play button (`.play`, its round icon shows on hover, always visible on touch screens) that starts or resumes a room via `startRoom`. There is no separate play button in the card footer.
 - Start rooms with `startRoom()` from `#lib/watch.ts` (saves the invite code of private rooms).
 - Prettier settings: tabs, single quotes, no trailing commas, width 100.
 

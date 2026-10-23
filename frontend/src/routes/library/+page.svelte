@@ -298,21 +298,13 @@
 		bulkTarget = '';
 	}
 
-	// ---------- drag and drop ----------
-
-	// Cards dragged within the page carry their IDs under these types.
-	const MEDIA_TYPE = 'application/x-whatever-media';
-	const FOLDER_TYPE = 'application/x-whatever-folder';
+	// ---------- dropping files to upload ----------
 
 	// Files dragged in from the desktop: the drop overlay.
 	let fileDrag = $state(false);
 	let dragDepth = 0;
-	// The folder card or breadcrumb a card is dragged over ('' = top level).
-	let dropTarget = $state<string | null>(null);
 
 	const hasFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes('Files');
-	const hasCards = (e: DragEvent) =>
-		!!e.dataTransfer?.types.some((t) => t === MEDIA_TYPE || t === FOLDER_TYPE);
 
 	function onWindowDragEnter(e: DragEvent) {
 		if (!hasFiles(e)) return;
@@ -346,49 +338,6 @@
 		uploader.enqueue(files, current?.id ?? null);
 	}
 
-	function dragMedia(e: DragEvent, item: MediaItem) {
-		// dragging a selected card moves the whole selection
-		const ids = selected.has(item.id) ? [...selected] : [item.id];
-		e.dataTransfer?.setData(MEDIA_TYPE, JSON.stringify(ids));
-		if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-	}
-
-	function dragFolder(e: DragEvent, f: Folder) {
-		e.dataTransfer?.setData(FOLDER_TYPE, f.id);
-		if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-	}
-
-	function overTarget(e: DragEvent, id: string | null) {
-		if (!hasCards(e)) return;
-		e.preventDefault();
-		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-		dropTarget = id ?? '';
-	}
-
-	function leaveTarget(id: string | null) {
-		if (dropTarget === (id ?? '')) dropTarget = null;
-	}
-
-	async function dropOn(e: DragEvent, folderId: string | null) {
-		if (!hasCards(e)) return;
-		e.preventDefault();
-		dropTarget = null;
-		const mediaIds = e.dataTransfer?.getData(MEDIA_TYPE);
-		const folder = e.dataTransfer?.getData(FOLDER_TYPE);
-		if (mediaIds) {
-			await bulk('move', JSON.parse(mediaIds) as string[], folderId);
-		} else if (folder && folder !== folderId) {
-			try {
-				await apiFetch(`/api/folders/${folder}`, {
-					method: 'PATCH',
-					body: JSON.stringify({ parentId: folderId })
-				});
-			} catch (err) {
-				error = errorText(err);
-			}
-		}
-	}
-
 	function statusText(item: MediaItem, uploading: boolean) {
 		if (uploading) return `uploading ${Math.round((uploader.progress ?? 0) * 100)}%`;
 		if (item.progress != null && (item.status === 'processing' || item.status === 'downloading'))
@@ -412,22 +361,10 @@
 			<h1 class="section-title">{current?.name ?? 'Library'}</h1>
 			{#if crumbs.length}
 				<nav class="crumbs" aria-label="Folder path">
-					<a
-						href={folderHref(null)}
-						class:drop-target={dropTarget === ''}
-						ondragover={(e) => overTarget(e, null)}
-						ondragleave={() => leaveTarget(null)}
-						ondrop={(e) => dropOn(e, null)}>Library</a
-					>
+					<a href={folderHref(null)}>Library</a>
 					{#each crumbs.slice(0, -1) as c (c.id)}
 						<ChevronRight size={14} />
-						<a
-							href={folderHref(c.id)}
-							class:drop-target={dropTarget === c.id}
-							ondragover={(e) => overTarget(e, c.id)}
-							ondragleave={() => leaveTarget(c.id)}
-							ondrop={(e) => dropOn(e, c.id)}>{c.name}</a
-						>
+						<a href={folderHref(c.id)}>{c.name}</a>
 					{/each}
 					<ChevronRight size={14} />
 					<span>{current?.name}</span>
@@ -520,15 +457,7 @@
 		<ul class="grid">
 			{#each subfolders as f (f.id)}
 				{@const info = folderInfo.get(f.id)}
-				<li
-					class="card"
-					class:drop-target={dropTarget === f.id}
-					draggable="true"
-					ondragstart={(e) => dragFolder(e, f)}
-					ondragover={(e) => overTarget(e, f.id)}
-					ondragleave={() => leaveTarget(f.id)}
-					ondrop={(e) => dropOn(e, f.id)}
-				>
+				<li class="card">
 					<a href={folderHref(f.id)} class="thumb folder-thumb" draggable="false">
 						{#if info?.poster}<img src={info.poster} alt="" draggable="false" />{/if}
 						<span class="folder-icon"><FolderIcon size={36} /></span>
@@ -560,17 +489,23 @@
 				{@const working =
 					!uploading && (item.status === 'processing' || item.status === 'downloading')}
 				{@const isSelected = selected.has(item.id)}
-				<li
-					class="card"
-					class:selected={isSelected}
-					draggable="true"
-					ondragstart={(e) => dragMedia(e, item)}
-				>
+				<li class="card" class:selected={isSelected}>
 					<div class="thumb">
 						{#if item.status === 'ready' && item.posterKey && item.playbackUrl}
 							<img src="{PUBLIC_API_URL}{item.playbackUrl}/poster.jpg" alt="" draggable="false" />
 						{:else}
 							<Film size={32} />
+						{/if}
+						{#if item.status === 'ready' && !selecting}
+							<!-- the whole poster starts (or resumes) a room; the button shows on hover -->
+							<button
+								class="play"
+								title={watchedAt ? `Resume from ${formatTime(watchedAt)}` : 'Watch together'}
+								aria-label="{watchedAt ? 'Resume' : 'Watch'} {item.filename}"
+								onclick={() => watch(item)}
+							>
+								<span class="btn-round"><Play size={20} fill="currentColor" /></span>
+							</button>
 						{/if}
 						{#if item.season != null}
 							<span class="badge se">S{item.season}E{item.episode ?? '?'}</span>
@@ -638,15 +573,6 @@
 						<button class="btn-icon edit" title="Edit" onclick={() => (editingId = item.id)}>
 							<Pencil size={16} />
 						</button>
-						{#if item.status === 'ready'}
-							<button
-								class="btn-round"
-								title={watchedAt ? `Resume from ${formatTime(watchedAt)}` : 'Watch together'}
-								onclick={() => watch(item)}
-							>
-								<Play size={14} fill="currentColor" />
-							</button>
-						{/if}
 					</div>
 				</li>
 			{/each}
@@ -853,11 +779,6 @@
 		border-radius: 0.3rem;
 	}
 
-	/* drop targets while dragging cards: the --ring outline */
-	.drop-target {
-		box-shadow: var(--ring);
-	}
-
 	.card.selected .thumb {
 		box-shadow: var(--ring);
 	}
@@ -899,6 +820,46 @@
 
 	h3 a:hover {
 		color: var(--color-primary);
+	}
+
+	/* the whole poster is the play button; the round icon appears on hover */
+	.play {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background-color: rgb(0 0 0 / 0);
+		transition: background-color 0.2s ease;
+	}
+
+	.play .btn-round {
+		width: 3rem;
+		height: 3rem;
+		opacity: 0;
+		transform: scale(0.85);
+		transition:
+			opacity 0.2s ease,
+			transform 0.2s ease;
+	}
+
+	.play:hover,
+	.play:focus-visible {
+		background-color: rgb(0 0 0 / 0.35);
+	}
+
+	.play:hover .btn-round,
+	.play:focus-visible .btn-round {
+		opacity: 1;
+		transform: scale(1);
+	}
+
+	/* touch screens can't hover: keep the button visible */
+	@media (hover: none) {
+		.play .btn-round {
+			opacity: 0.85;
+			transform: none;
+		}
 	}
 
 	.se {

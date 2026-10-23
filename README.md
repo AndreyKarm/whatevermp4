@@ -110,9 +110,9 @@ After a file arrives, the worker transcodes it; the card shows `processing 42%` 
 **Organising**
 
 - **Folders**: *New folder* creates one in the current folder, so you can nest a series → *Season 1*, *Season 2*. Click a folder to open it; the breadcrumb takes you back up. Deleting a folder moves its contents up a level, it never deletes movies.
-- **Moving**: drag cards onto a folder card or a breadcrumb, or use *Edit* → *Folder*.
+- **Moving**: use *Edit* → *Folder* for one movie, or *Select* for several (below). A folder moves with *Folder* → *Inside* while it's open.
 - **Search and filters**: search by name; filter by status and by *not watched yet / in progress / watched* (tracked per browser); search this folder, including subfolders, or the whole library; sort by newest, name or season/episode.
-- **Bulk actions**: click **Select**, tick movies (or *All*), then move, re-process, delete originals or delete them from the bar at the bottom. Dragging a selected card moves the whole selection.
+- **Bulk actions**: click **Select**, tick movies (or *All*), then move, re-process, delete originals or delete them from the bar at the bottom.
 
 **Editing a movie** (the pencil on a card):
 
@@ -129,7 +129,7 @@ The download icon on a card downloads the original file.
 
 ### Watching together
 
-Press **▶** on a ready movie (or *Watch together* in its editor). That creates a room and opens it; send the room's address to the others. The **Rooms** page lists open rooms with who's watching. A room is removed about a minute after the last person leaves.
+Click the poster of a ready movie (a **▶** appears when you point at it), or *Watch together* in its editor. If you watched part of it before, it resumes where you stopped. That creates a room and opens it; send the room's address to the others. The **Rooms** page lists open rooms with who's watching. A room is removed about a minute after the last person leaves.
 
 **The host** (whoever created the room) controls playback; everyone else follows automatically. If anyone's player is buffering, the room pauses for everyone and shows who it's waiting for.
 
