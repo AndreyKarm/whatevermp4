@@ -98,6 +98,8 @@ export interface RoomMember {
 	drift?: number;
 	/** seconds buffered ahead of its playhead */
 	ahead?: number;
+	/** round trip to the server in ms */
+	ping?: number;
 }
 
 // Server → client WebSocket messages (backend/internal/rooms/messages.go `Out`).
@@ -130,7 +132,7 @@ export type RoomIn =
 	| { type: 'buffering'; buffering: boolean }
 	| { type: 'status'; drift: number; ahead: number }
 	| { type: 'chat'; text: string }
-	| { type: 'ping'; t: number };
+	| { type: 'ping'; t: number; rtt?: number };
 
 export interface RoomItem {
 	id: string;

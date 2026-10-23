@@ -86,6 +86,10 @@ func (r *Room) membersLocked() []Member {
 			drift, ahead := c.drift, c.ahead
 			m.Drift, m.Ahead = &drift, &ahead
 		}
+		if c.ping > 0 {
+			ping := c.ping
+			m.Ping = &ping
+		}
 		ms = append(ms, m)
 	}
 	// a stable order, so the list doesn't reshuffle on every update
@@ -367,6 +371,21 @@ func (r *Room) setAccess(a Access) {
 	defer r.mu.Unlock()
 	r.access = a
 	r.broadcastStateLocked()
+}
+
+// setPing records a member's round trip (ms); it goes out with the next
+// members tick, and only when it changed enough to show.
+func (r *Room) setPing(c *Client, rtt float64) {
+	if !finite(rtt) {
+		return
+	}
+	ms := int(math.Round(math.Min(math.Max(rtt, 1), 60_000)))
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c.ping == 0 || math.Abs(float64(ms-c.ping)) >= 5 {
+		c.ping = ms
+		r.membersDirty = true
+	}
 }
 
 // flushMembers sends members if a status changed since the last send.

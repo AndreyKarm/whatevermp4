@@ -19,6 +19,7 @@ type Client struct {
 	hasStatus bool
 	drift     float64
 	ahead     float64
+	ping      int // ms; 0 = not reported yet
 }
 
 func (c *Client) trySend(b []byte) {
@@ -65,6 +66,9 @@ func (c *Client) readLoop(ctx context.Context) {
 		}
 		if in.Type == "ping" {
 			c.sendOut(Out{Type: "pong", T: in.T, Server: nowMs()})
+			if in.RTT > 0 {
+				c.room.setPing(c, in.RTT)
+			}
 			continue
 		}
 		c.room.receive(ctx, c, in)

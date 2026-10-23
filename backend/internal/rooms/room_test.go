@@ -280,6 +280,40 @@ func TestStatusIsThrottled(t *testing.T) {
 	t.Fatal("guest missing from members")
 }
 
+func TestPingIsReportedWithMembers(t *testing.T) {
+	r := newTestRoom(t, Access{Owner: "host"}, nil)
+	host, guest := client(t, r, "host"), client(t, r, "guest")
+	r.flushMembers()
+	drain(host)
+
+	pingOf := func() *int {
+		r.flushMembers()
+		m := lastOf(drain(host), "members")
+		if m == nil {
+			return nil
+		}
+		for _, mem := range m.Members {
+			if mem.Name == "guest" {
+				return mem.Ping
+			}
+		}
+		return nil
+	}
+	r.setPing(guest, 41.6)
+	if p := pingOf(); p == nil || *p != 42 {
+		t.Fatalf("ping: %v", p)
+	}
+	r.setPing(guest, 44) // under 5 ms of change: no update
+	if p := pingOf(); p != nil {
+		t.Fatalf("a tiny change shouldn't resend members: %v", *p)
+	}
+	r.setPing(guest, math.Inf(1))
+	r.setPing(guest, 120)
+	if p := pingOf(); p == nil || *p != 120 {
+		t.Fatalf("ping after change: %v", p)
+	}
+}
+
 func TestPrivateRoomNeedsInvite(t *testing.T) {
 	r := newTestRoom(t, Access{Owner: "host", Private: true, InviteCode: "secret"}, nil)
 	if err := r.join(&Client{Nickname: "x", send: make(chan []byte, 8)}, ""); err != ErrInviteRequired {

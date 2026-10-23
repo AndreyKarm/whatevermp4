@@ -304,6 +304,10 @@
 		return off < 0.3 ? 'sync-good' : off < 1 ? 'sync-warn' : 'sync-bad';
 	}
 
+	function pingClass(ms: number) {
+		return ms < 150 ? '' : ms < 400 ? 'ping-warn' : 'ping-bad';
+	}
+
 	function fmtDrift(d: number) {
 		return `${d >= 0 ? '+' : '−'}${Math.abs(d).toFixed(1)}s`;
 	}
@@ -417,9 +421,9 @@
 							<span class="badge ctl">controls</span>
 						{/if}
 						{#if m.buffering}<span class="meta status-processing">buffering</span>{/if}
-						{#if room?.canControl && m.drift != null}
-							<span class="meta sync {syncClass(m)}">
-								{fmtDrift(m.drift)} · {Math.round(m.ahead ?? 0)}s buf
+						{#if m.ping != null}
+							<span class="meta ping {pingClass(m.ping)}" title="Round trip to the server">
+								{m.ping} ms
 							</span>
 						{/if}
 						{#if isOwner && m.name !== room?.owner}
@@ -813,16 +817,16 @@
 		background-color: var(--color-accent);
 	}
 
-	.sync {
-		width: 100%;
-		padding-left: 1rem;
+	.ping {
+		font-variant-numeric: tabular-nums;
+		text-transform: none;
 	}
 
-	.sync.sync-warn {
+	.ping-warn {
 		color: var(--color-warn);
 	}
 
-	.sync.sync-bad {
+	.ping-bad {
 		color: var(--color-accent);
 	}
 

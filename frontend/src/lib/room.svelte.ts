@@ -42,6 +42,7 @@ export class RoomSocket {
 
 	#ws: WebSocket | null = null;
 	#offset = 0;
+	#rtt = 0;
 	#nickname: string;
 	#roomId: string;
 	#apiUrl: string;
@@ -127,8 +128,9 @@ export class RoomSocket {
 		if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify(payload));
 	}
 
+	// Each ping carries the previous one's round trip, which others see as our ping.
 	#ping() {
-		this.send({ type: 'ping', t: Date.now() });
+		this.send({ type: 'ping', t: Date.now(), rtt: this.#rtt || undefined });
 	}
 
 	#handle(msg: RoomOut) {
@@ -148,6 +150,7 @@ export class RoomSocket {
 				break;
 			case 'pong': {
 				const rtt = Date.now() - msg.t;
+				this.#rtt = Math.max(rtt, 1);
 				this.#offset = msg.server - (msg.t + rtt / 2);
 				break;
 			}

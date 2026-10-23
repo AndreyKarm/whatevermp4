@@ -53,10 +53,10 @@ test('two viewers: sync, chat, sync status, queue and handing over control', asy
 	await guest.getByPlaceholder('Message…').press('Enter');
 	await expect(host.getByText('hello from the couch')).toBeVisible();
 
-	// the host sees each viewer's drift and buffer
+	// everyone's ping is listed; controllers also get a sync-health dot
 	const guestRow = host.locator('.members li', { hasText: guestNick });
-	await expect(guestRow.locator('.sync')).toBeVisible({ timeout: 15_000 });
-	await expect(guestRow.locator('.sync')).toContainText('buf');
+	await expect(guestRow.locator('.ping')).toHaveText(/^\d+ ms$/, { timeout: 20_000 });
+	await expect(guestRow.locator('.dot')).toHaveAttribute('title', /buffered/);
 
 	// queue the next episode (season/episode order), then skip to it
 	await host.getByRole('button', { name: 'Next episodes' }).click();

@@ -16,6 +16,8 @@ type Member struct {
 	// room clock, and seconds buffered ahead of its playhead.
 	Drift *float64 `json:"drift,omitempty"`
 	Ahead *float64 `json:"ahead,omitempty"`
+	// round trip to the server in ms, as the member's last ping measured it
+	Ping *int `json:"ping,omitempty"`
 }
 
 // In: play | pause | seek | rate | change_media | queue | next | buffering | status | chat | ping
@@ -30,6 +32,7 @@ type In struct {
 	Drift     float64  `json:"drift,omitempty"` // status
 	Ahead     float64  `json:"ahead,omitempty"` // status
 	T         int64    `json:"t,omitempty"`
+	RTT       float64  `json:"rtt,omitempty"` // ping: the previous ping's round trip in ms
 }
 
 // Out: state | members | chat | pong | error

@@ -177,6 +177,30 @@
 		}
 	}
 
+	// Mouse wheel over the volume controls: 1% per 50px of scroll (a wheel
+	// notch is about 100px, so 2%), finer than dragging the slider. The
+	// listener is added by hand because it must not be passive.
+	let soundEl: HTMLDivElement | undefined = $state();
+	$effect(() => {
+		const el = soundEl;
+		if (!el) return;
+		let acc = 0;
+		const onWheel = (e: WheelEvent) => {
+			e.preventDefault();
+			const px = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 400 : e.deltaY;
+			acc += px;
+			const steps = Math.trunc(acc / 50);
+			if (!steps) return;
+			acc -= steps * 50;
+			// scrolling up (negative delta) raises the volume
+			const next = Math.min(Math.max(Math.round((volume - steps / 100) * 100) / 100, 0), 1);
+			if (next > volume) muted = false;
+			volume = next;
+		};
+		el.addEventListener('wheel', onWheel, { passive: false });
+		return () => el.removeEventListener('wheel', onWheel);
+	});
+
 	$effect(() => {
 		const s = { volume, muted };
 		try {
@@ -435,12 +459,18 @@
 						<Play size={14} fill="currentColor" />
 					{/if}
 				</button>
-				<button class="btn-icon skip" title="Back {BACK}s (←)" onclick={() => skip(-BACK)}>
-					<RotateCcw size={18} /><span>{BACK}</span>
-				</button>
-				<button class="btn-icon skip" title="Forward {FORWARD}s (→)" onclick={() => skip(FORWARD)}>
-					<RotateCw size={18} /><span>{FORWARD}</span>
-				</button>
+				<div class="skips">
+					<button class="btn-icon skip" title="Back {BACK}s (←)" onclick={() => skip(-BACK)}>
+						<RotateCcw size={18} /><span>{BACK}</span>
+					</button>
+					<button
+						class="btn-icon skip"
+						title="Forward {FORWARD}s (→)"
+						onclick={() => skip(FORWARD)}
+					>
+						<RotateCw size={18} /><span>{FORWARD}</span>
+					</button>
+				</div>
 			{/if}
 			<span class="time">{fmt(shownTime)} / {fmt(duration)}</span>
 			<span class="spacer"></span>
@@ -465,22 +495,27 @@
 					{/each}
 				</select>
 			{/if}
-			<button
-				class="btn-icon"
-				title={muted ? 'Unmute (m)' : 'Mute (m)'}
-				onclick={() => (muted = !muted)}
-			>
-				{#if muted || volume === 0}<VolumeX size={18} />{:else}<Volume2 size={18} />{/if}
-			</button>
-			<input
-				type="range"
-				class="volume"
-				aria-label="Volume"
-				min="0"
-				max="1"
-				step="0.05"
-				bind:value={volume}
-			/>
+			<!-- scroll over it for 1% steps -->
+			<div class="sound" bind:this={soundEl}>
+				<button
+					class="btn-icon"
+					title={muted ? 'Unmute (m)' : 'Mute (m)'}
+					onclick={() => (muted = !muted)}
+				>
+					{#if muted || volume === 0}<VolumeX size={18} />{:else}<Volume2 size={18} />{/if}
+				</button>
+				<input
+					type="range"
+					class="volume"
+					aria-label="Volume"
+					title="Volume (scroll to adjust)"
+					min="0"
+					max="1"
+					step="0.01"
+					bind:value={volume}
+				/>
+				<span class="vol-pct">{muted ? 0 : Math.round(volume * 100)}%</span>
+			</div>
 			<button class="btn-icon" title="Fullscreen (f)" onclick={toggleFullscreen}>
 				{#if fullscreen}<Minimize size={18} />{:else}<Maximize size={18} />{/if}
 			</button>
@@ -687,8 +722,15 @@
 		font-weight: 600;
 	}
 
+	/* the two skips sit together, set apart from play/pause */
+	.skips {
+		display: flex;
+		margin-left: 0.5rem;
+	}
+
 	.skip {
 		position: relative;
+		min-width: 28px;
 	}
 
 	.skip span {
@@ -700,6 +742,7 @@
 	.time {
 		margin-left: 0.25rem;
 		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
 	}
 
 	.spacer {
@@ -714,7 +757,27 @@
 		font-size: 12px;
 	}
 
+	.sound {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
 	.volume {
 		width: 5rem;
+	}
+
+	/* the exact level, while pointing at the volume controls */
+	.vol-pct {
+		width: 2.25rem;
+		margin-left: -0.25rem;
+		font-variant-numeric: tabular-nums;
+		opacity: 0;
+		transition: opacity 0.15s ease;
+	}
+
+	.sound:hover .vol-pct,
+	.sound:focus-within .vol-pct {
+		opacity: 1;
 	}
 </style>
