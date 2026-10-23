@@ -35,17 +35,31 @@ type In struct {
 	RTT       float64  `json:"rtt,omitempty"` // ping: the previous ping's round trip in ms
 }
 
-// Out: state | members | chat | pong | error
+// RoomInfo is the room's settings and who controls it, sent on join and
+// whenever the owner changes them.
+type RoomInfo struct {
+	Name        string   `json:"name"`
+	Owner       string   `json:"owner"`
+	Everyone    bool     `json:"everyone"`
+	Controllers []string `json:"controllers"`
+	Private     bool     `json:"private"`
+	HasPassword bool     `json:"hasPassword"`
+	InviteCode  string   `json:"inviteCode,omitempty"` // only to the owner of a private room
+}
+
+// Out: state | queue | room | members | chat | pong | error
+//   - state: playback (and the queue) changed
+//   - queue: only the queue changed
+//   - room: settings, owner or controllers changed
 type Out struct {
-	Type        string   `json:"type"`
-	State       *State   `json:"state,omitempty"`
-	Holding     bool     `json:"holding,omitempty"` // paused while waiting for buffering
-	Members     []Member `json:"members,omitempty"`
-	From        *Member  `json:"from,omitempty"`
-	Text        string   `json:"text,omitempty"`
-	T           int64    `json:"t,omitempty"`
-	Server      int64    `json:"server,omitempty"`
-	Owner       string   `json:"owner,omitempty"`
-	Everyone    bool     `json:"everyone,omitempty"`
-	Controllers []string `json:"controllers,omitempty"`
+	Type    string    `json:"type"`
+	State   *State    `json:"state,omitempty"`
+	Holding bool      `json:"holding,omitempty"` // paused while waiting for buffering
+	Queue   []string  `json:"queue,omitempty"`
+	Room    *RoomInfo `json:"room,omitempty"`
+	Members []Member  `json:"members,omitempty"`
+	From    *Member   `json:"from,omitempty"`
+	Text    string    `json:"text,omitempty"`
+	T       int64     `json:"t,omitempty"`
+	Server  int64     `json:"server,omitempty"`
 }

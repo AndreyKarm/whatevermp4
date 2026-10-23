@@ -17,10 +17,12 @@ import (
 // with the rooms row (owner_name, everyone_controls, controllers, private,
 // invite_code).
 type Access struct {
+	Name        string
 	Owner       string
 	Everyone    bool
 	Controllers []string // nicknames the owner allowed to control playback
 	Private     bool
+	HasPassword bool
 	InviteCode  string // required to join a private room
 }
 
@@ -99,8 +101,21 @@ func (r *Room) membersLocked() []Member {
 
 func (r *Room) stateMsgLocked() Out {
 	st := r.state
-	return Out{Type: "state", State: &st, Holding: r.holding, Server: nowMs(),
-		Owner: r.access.Owner, Everyone: r.access.Everyone, Controllers: r.access.Controllers}
+	return Out{Type: "state", State: &st, Holding: r.holding, Server: nowMs()}
+}
+
+// roomMsgLocked is the room message for c: the invite code goes only to the owner.
+func (r *Room) roomMsgLocked(c *Client) Out {
+	a := r.access
+	info := RoomInfo{Name: a.Name, Owner: a.Owner, Everyone: a.Everyone,
+		Controllers: a.Controllers, Private: a.Private, HasPassword: a.HasPassword}
+	if info.Controllers == nil {
+		info.Controllers = []string{}
+	}
+	if a.Private && c.Nickname == a.Owner {
+		info.InviteCode = a.InviteCode
+	}
+	return Out{Type: "room", Room: &info}
 }
 
 func (r *Room) broadcastLocked(o Out) {
@@ -151,6 +166,7 @@ func (r *Room) join(c *Client, invite string) error {
 	}
 	c.room = r
 	r.clients[c] = struct{}{}
+	c.sendOut(r.roomMsgLocked(c))
 	c.sendOut(r.stateMsgLocked())
 	r.broadcastMembersLocked()
 	return nil
@@ -285,8 +301,7 @@ func (r *Room) handle(c *Client, in In, known map[string]float64) {
 		// playback is untouched (and so is a buffering hold)
 		r.state.Queue = q
 		r.dirty = true
-		r.broadcastStateLocked()
-		r.changed()
+		r.broadcastLocked(Out{Type: "queue", Queue: q})
 		return
 	case "next":
 		if len(r.state.Queue) == 0 {
@@ -370,7 +385,9 @@ func (r *Room) setAccess(a Access) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.access = a
-	r.broadcastStateLocked()
+	for c := range r.clients {
+		c.sendOut(r.roomMsgLocked(c))
+	}
 }
 
 // setPing records a member's round trip (ms); it goes out with the next

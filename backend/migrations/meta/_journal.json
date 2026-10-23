@@ -29,6 +29,13 @@
       "when": 1792720655817,
       "tag": "0003_rooms_media_features",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792724869614,
+      "tag": "0004_row_event_payloads",
+      "breakpoints": true
     }
   ]
 }

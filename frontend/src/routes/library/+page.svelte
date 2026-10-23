@@ -23,7 +23,8 @@
 		X
 	} from '@lucide/svelte';
 	import { apiFetch, apiPost } from '#lib/api.ts';
-	import { onChange } from '#lib/events.ts';
+	import { onChange, onEvents, type ServerEvent } from '#lib/events.ts';
+	import { MediaList } from '#lib/media.svelte.ts';
 	import { byEpisode, byFilename } from '#lib/episodes.ts';
 	import { byNumericName, folderOptions, folderPath, pathLabel, subtree } from '#lib/folders.ts';
 	import { getProgress, isWatched } from '#lib/progress.ts';
@@ -36,11 +37,15 @@
 	import FolderModal from '#lib/components/FolderModal.svelte';
 	import Downloads from '#lib/components/Downloads.svelte';
 
-	let media = $state<MediaItem[]>([]);
+	const mediaList = new MediaList();
+	const media = $derived(mediaList.items);
+	const loaded = $derived(mediaList.loaded);
 	let folders = $state<Folder[]>([]);
 	let torrents = $state<TorrentItem[]>([]);
-	let loaded = $state(false);
 	let error = $state<string | null>(null);
+	$effect(() => {
+		if (mediaList.error) error = mediaList.error;
+	});
 
 	// Current folder from ?folder=…; null = top level.
 	const currentId = $derived(page.url.searchParams.get('folder'));
@@ -168,17 +173,6 @@
 
 	// ---------- loading ----------
 
-	async function loadMedia() {
-		try {
-			media = await apiFetch<MediaItem[]>('/api/media');
-			error = null;
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
-		} finally {
-			loaded = true;
-		}
-	}
-
 	async function loadFolders() {
 		try {
 			folders = await apiFetch<Folder[]>('/api/folders');
@@ -195,14 +189,32 @@
 		}
 	}
 
+	// Download progress is patched in; other torrent changes reload the (short) list.
+	function onTorrentEvents(events: ServerEvent[], resync: boolean) {
+		let reload = resync;
+		for (const e of events) {
+			if (e.type !== 'torrent_progress') {
+				reload = true;
+				continue;
+			}
+			const t = torrents.find((t) => t.id === e.id);
+			if (t)
+				Object.assign(t, {
+					progress: e.progress,
+					bytesDone: e.bytesDone,
+					bytesTotal: e.bytesTotal
+				});
+		}
+		if (reload) loadTorrents();
+	}
+
 	onMount(() => {
-		loadMedia();
 		loadFolders();
 		loadTorrents();
 		const offs = [
-			onChange(['media_files'], loadMedia),
+			mediaList.live(),
 			onChange(['folders'], loadFolders),
-			onChange(['torrents'], loadTorrents)
+			onEvents(['torrents', 'torrent_progress'], onTorrentEvents)
 		];
 		return () => offs.forEach((off) => off());
 	});

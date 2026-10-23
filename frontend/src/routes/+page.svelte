@@ -4,14 +4,16 @@
 	import { PUBLIC_API_URL } from '$app/env/public';
 	import { Film, Library, Lock, Pause, Play } from '@lucide/svelte';
 	import { apiFetch } from '#lib/api.ts';
-	import { onChange } from '#lib/events.ts';
+	import { onEvents, type ServerEvent } from '#lib/events.ts';
+	import { MediaList } from '#lib/media.svelte.ts';
 	import { listProgress } from '#lib/progress.ts';
 	import { formatTime } from '#lib/time.ts';
 	import { startRoom } from '#lib/watch.ts';
 	import type { MediaItem, RoomItem } from '#lib/types.ts';
 
 	let rooms = $state<RoomItem[]>([]);
-	let media = $state<MediaItem[]>([]);
+	const mediaList = new MediaList();
+	const media = $derived(mediaList.items);
 	let loaded = $state(false);
 	let error = $state<string | null>(null);
 
@@ -41,18 +43,18 @@
 		}
 	}
 
-	async function loadMedia() {
-		try {
-			media = await apiFetch<MediaItem[]>('/api/media');
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
+	// Room cards show their movie's title and poster: reload when one of those
+	// movies changes, not for every library change.
+	function onRoomEvents(events: ServerEvent[], resync: boolean) {
+		const shown = new Set(rooms.map((r) => r.media?.id ?? r.state.mediaId));
+		if (resync || events.some((e) => e.type === 'rooms' || ('id' in e && shown.has(e.id)))) {
+			load();
 		}
 	}
 
 	onMount(() => {
 		load();
-		loadMedia();
-		const offs = [onChange(['rooms', 'media_files'], load), onChange(['media_files'], loadMedia)];
+		const offs = [mediaList.live(), onEvents(['rooms', 'media_files'], onRoomEvents)];
 		return () => offs.forEach((off) => off());
 	});
 

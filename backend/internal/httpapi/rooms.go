@@ -60,8 +60,8 @@ func (rm *roomRow) scan(row pgx.Row) error {
 }
 
 func (rm *roomRow) access() rooms.Access {
-	a := rooms.Access{Owner: rm.OwnerName, Everyone: rm.EveryoneControls,
-		Controllers: rm.Controllers, Private: rm.Private}
+	a := rooms.Access{Name: rm.Name, Owner: rm.OwnerName, Everyone: rm.EveryoneControls,
+		Controllers: rm.Controllers, Private: rm.Private, HasPassword: rm.passwordHash != nil}
 	if rm.inviteCode != nil {
 		a.InviteCode = *rm.inviteCode
 	}

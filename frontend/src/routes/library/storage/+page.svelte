@@ -5,29 +5,31 @@
 	import { apiFetch, apiPost } from '#lib/api.ts';
 	import { formatBytes } from '#lib/bytes.ts';
 	import { onChange } from '#lib/events.ts';
+	import { MediaList } from '#lib/media.svelte.ts';
 	import { byNumericName, subtree } from '#lib/folders.ts';
 	import type { Folder, MediaItem } from '#lib/types.ts';
 
-	let media = $state<MediaItem[]>([]);
+	const mediaList = new MediaList();
+	const media = $derived(mediaList.items);
 	let folders = $state<Folder[]>([]);
 	let error = $state<string | null>(null);
 	let busy = $state(false);
+	$effect(() => {
+		if (mediaList.error) error = mediaList.error;
+	});
 
-	async function load() {
+	async function loadFolders() {
 		try {
-			[media, folders] = await Promise.all([
-				apiFetch<MediaItem[]>('/api/media'),
-				apiFetch<Folder[]>('/api/folders')
-			]);
-			error = null;
+			folders = await apiFetch<Folder[]>('/api/folders');
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		}
 	}
 
 	onMount(() => {
-		load();
-		return onChange(['media_files', 'folders'], load);
+		loadFolders();
+		const offs = [mediaList.live(), onChange(['folders'], loadFolders)];
+		return () => offs.forEach((off) => off());
 	});
 
 	const size = (m: MediaItem) => (m.rawBytes ?? 0) + (m.hlsBytes ?? 0);

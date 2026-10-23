@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"liotom/whateverserver/internal/rooms"
 	"net/http"
 	"time"
@@ -10,8 +9,8 @@ import (
 	"github.com/coder/websocket"
 )
 
-// GET /api/events (WebSocket): sends {"type": "<topic>"} whenever media,
-// torrents or rooms change, so pages can refetch instead of polling.
+// GET /api/events (WebSocket): forwards every change event (JSON, see
+// internal/events) so pages update instead of polling.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		OriginPatterns: rooms.OriginPatterns(s.cfg.AllowedOrigins),
@@ -31,10 +30,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
-		case topic := <-ch:
-			b, _ := json.Marshal(map[string]string{"type": topic})
+		case payload, ok := <-ch:
+			if !ok {
+				// fell behind: the client reconnects and resyncs
+				conn.Close(websocket.StatusTryAgainLater, "too many events")
+				return
+			}
 			wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			err := conn.Write(wctx, websocket.MessageText, b)
+			err := conn.Write(wctx, websocket.MessageText, []byte(payload))
 			cancel()
 			if err != nil {
 				return

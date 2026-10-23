@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { apiFetch, apiPost } from '#lib/api.ts';
 	import { onChange } from '#lib/events.ts';
+	import { MediaList } from '#lib/media.svelte.ts';
 	import { getProgress } from '#lib/progress.ts';
 	import { nickname } from '#lib/nickname.svelte.ts';
 	import { PUBLIC_API_URL } from '$app/env/public';
@@ -36,10 +37,12 @@
 	const roomId = $derived(page.params.id ?? '');
 
 	let room = $state<RoomSocket | null>(null);
-	let info = $state<RoomItem | null>(null);
+	// Settings come over the room socket (sent on join and on every change);
+	// the REST call is only for the name and password prompt of a room that
+	// refused us.
+	const info = $derived(room?.info ?? null);
 	let lockedInfo = $state<LockedRoom | null>(null);
-	let mediaItem = $state<MediaItem | null>(null);
-	let library = $state<MediaItem[]>([]);
+	const mediaList = new MediaList();
 	let folders = $state<Folder[]>([]);
 	let actionError = $state<string | null>(null);
 	let message = $state('');
@@ -99,35 +102,35 @@
 		return () => r.close();
 	});
 
-	function loadInfo() {
-		const headers: Record<string, string> = invite ? { 'X-Room-Invite': invite } : {};
-		apiFetch<RoomItem | LockedRoom>(`/api/rooms/${roomId}`, { headers })
+	// Refused (private room, no valid invite): fetch the name and whether a
+	// password works. The owner gets the invite code instead and reconnects.
+	$effect(() => {
+		if (!room?.locked) return;
+		apiFetch<RoomItem | LockedRoom>(`/api/rooms/${roomId}`)
 			.then((r) => {
 				if ('locked' in r) {
 					lockedInfo = r;
-					info = null;
-					return;
-				}
-				lockedInfo = null;
-				info = r;
-				// the owner gets the code back; keep it for invite links and the socket
-				if (r.inviteCode && r.inviteCode !== invite) {
+				} else if (r.inviteCode) {
 					saveInvite(roomId, r.inviteCode);
 					invite = r.inviteCode;
 				}
 			})
 			.catch((e) => (actionError = e.message));
-	}
-
-	$effect(() => {
-		if (!roomId || !nickname.hasNickname) return;
-		loadInfo();
-		return onChange(['rooms'], loadInfo);
 	});
 
-	const locked = $derived(!!room?.locked || !!lockedInfo);
+	// The owner gets the invite code with the settings; remember it for reloads.
+	$effect(() => {
+		if (info?.inviteCode) saveInvite(roomId, info.inviteCode);
+	});
+
+	const locked = $derived(!!room?.locked);
+	const joined = $derived(!!info);
+	const roomName = $derived(info?.name ?? lockedInfo?.name ?? 'Watch Party');
 	const mediaId = $derived(room?.state?.mediaId);
 	const isOwner = $derived(!!room && room.owner === nickname.name);
+	// The selected media and the picker's ready media, kept current from server events.
+	const mediaItem = $derived(mediaList.items.find((m) => m.id === mediaId) ?? null);
+	const library = $derived(mediaList.items.filter((m) => m.status === 'ready'));
 	const byId = $derived(new Map(library.map((m) => [m.id, m])));
 	const inviteLink = $derived(
 		info?.inviteCode && browser
@@ -140,19 +143,7 @@
 		...new Map((room?.members ?? []).map((m) => [m.name, m])).values()
 	]);
 
-	function loadMedia(id: string) {
-		apiFetch<MediaItem>(`/api/media/${id}`)
-			.then((m) => (mediaItem = m))
-			.catch((e) => {
-				mediaItem = null;
-				actionError = e.message;
-			});
-	}
-
-	function loadLibrary() {
-		apiFetch<MediaItem[]>('/api/media')
-			.then((list) => (library = list.filter((m) => m.status === 'ready')))
-			.catch(console.error);
+	function loadFolders() {
 		apiFetch<Folder[]>('/api/folders')
 			.then((list) => (folders = list))
 			.catch(console.error);
@@ -172,22 +163,12 @@
 			);
 	});
 
-	// The selected media, kept fresh (e.g. after a re-process) via server events.
+	// Load the library once we're in; events keep it current after that.
 	$effect(() => {
-		const id = mediaId;
-		if (!id) {
-			mediaItem = null;
-			return;
-		}
-		loadMedia(id);
-		return onChange(['media_files'], () => loadMedia(id));
-	});
-
-	// Ready media for the picker and the queue's titles
-	$effect(() => {
-		if (!room?.connected) return;
-		loadLibrary();
-		return onChange(['media_files', 'folders'], loadLibrary);
+		if (!joined) return;
+		loadFolders();
+		const offs = [mediaList.live(), onChange(['folders'], loadFolders)];
+		return () => offs.forEach((off) => off());
 	});
 
 	// Keep the newest chat message in view.
@@ -208,8 +189,8 @@
 
 	async function patchRoom(body: Record<string, unknown>) {
 		try {
+			// the change comes back over the room socket
 			await apiFetch(`/api/rooms/${roomId}`, { method: 'PATCH', body: JSON.stringify(body) });
-			loadInfo();
 		} catch (err) {
 			actionError = errorText(err);
 		}
@@ -254,7 +235,6 @@
 			invite = inviteCode;
 			password = '';
 			actionError = null;
-			loadInfo();
 		} catch (err) {
 			actionError = errorText(err);
 		} finally {
@@ -313,15 +293,13 @@
 	}
 </script>
 
-<svelte:head
-	><title>{info?.name ?? lockedInfo?.name ?? 'Watch Party'} · whatevermp4</title></svelte:head
->
+<svelte:head><title>{roomName} · whatevermp4</title></svelte:head>
 
 <div class="room-page">
 	<section class="stage">
 		<div class="head">
 			<a href={resolve('/')} class="btn-icon back" title="Back to rooms"><ArrowLeft size={18} /></a>
-			<h1>{info?.name ?? lockedInfo?.name ?? 'Watch Party'}</h1>
+			<h1>{roomName}</h1>
 			{#if info?.private}<span class="meta" title="Private room"><Lock size={12} /></span>{/if}
 			{#if room && !locked}
 				<span class="meta">host: {room.owner || '…'}</span>
@@ -368,7 +346,7 @@
 				<div class="panel lock">
 					<Lock size={32} />
 					<p class="lock-title">This room is private</p>
-					{#if lockedInfo?.hasPassword ?? info?.hasPassword}
+					{#if lockedInfo?.hasPassword}
 						<form class="lock-form" onsubmit={unlock}>
 							<input
 								class="input"

@@ -102,18 +102,24 @@ export interface RoomMember {
 	ping?: number;
 }
 
+/** A room's settings and who controls it (the `room` WS message). */
+export interface RoomInfo {
+	name: string;
+	owner: string;
+	everyone: boolean;
+	controllers: string[];
+	private: boolean;
+	hasPassword: boolean;
+	/** only sent to the owner of a private room */
+	inviteCode?: string;
+}
+
 // Server → client WebSocket messages (backend/internal/rooms/messages.go `Out`).
 // The backend omits zero values, so most fields are optional.
 export type RoomOut =
-	| {
-			type: 'state';
-			state: RoomState;
-			holding?: boolean;
-			server: number;
-			owner?: string;
-			everyone?: boolean;
-			controllers?: string[];
-	  }
+	| { type: 'state'; state: RoomState; holding?: boolean; server: number }
+	| { type: 'queue'; queue?: string[] }
+	| { type: 'room'; room: RoomInfo }
 	| { type: 'members'; members?: RoomMember[] }
 	| { type: 'chat'; from: RoomMember; text: string }
 	| { type: 'pong'; t: number; server: number }

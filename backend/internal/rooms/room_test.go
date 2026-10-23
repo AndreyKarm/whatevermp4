@@ -96,8 +96,8 @@ func TestPlaybackPermissions(t *testing.T) {
 	if r.state.Playing {
 		t.Fatal("a guest could play after controllers were set")
 	}
-	if st := lastOf(drain(host), "state"); st == nil || len(st.Controllers) != 1 {
-		t.Fatalf("state should list controllers: %+v", st)
+	if rm := lastOf(drain(host), "room"); rm == nil || len(rm.Room.Controllers) != 1 {
+		t.Fatalf("a room message should list controllers: %+v", rm)
 	}
 
 	// ownership moves: the old owner loses control
@@ -185,9 +185,17 @@ func TestQueueAndAutoAdvance(t *testing.T) {
 	host, guest := client(t, r, "host"), client(t, r, "guest")
 
 	send(r, host, In{Type: "change_media", MediaID: "e1"})
+	drain(guest)
 	send(r, host, In{Type: "queue", Queue: []string{"e2", "missing", "e3", "e2"}})
 	if got := r.state.Queue; len(got) != 2 || got[0] != "e2" || got[1] != "e3" {
 		t.Fatalf("queue should drop unknown and duplicate IDs: %v", got)
+	}
+	msgs := drain(guest)
+	if q := lastOf(msgs, "queue"); q == nil || len(q.Queue) != 2 {
+		t.Fatalf("queue edits should go out as a queue message: %+v", msgs)
+	}
+	if lastOf(msgs, "state") != nil {
+		t.Fatal("a queue edit shouldn't resend the playback state")
 	}
 	send(r, guest, In{Type: "queue", Queue: []string{"e3"}})
 	if len(r.state.Queue) != 2 {
@@ -322,8 +330,17 @@ func TestPrivateRoomNeedsInvite(t *testing.T) {
 	if err := r.join(&Client{Nickname: "x", send: make(chan []byte, 8)}, "wrong"); err != ErrInviteRequired {
 		t.Fatalf("join with a wrong invite: %v", err)
 	}
-	if err := r.join(&Client{Nickname: "x", send: make(chan []byte, 8)}, "secret"); err != nil {
+	guest := &Client{Nickname: "x", send: make(chan []byte, 8)}
+	if err := r.join(guest, "secret"); err != nil {
 		t.Fatalf("join with the invite: %v", err)
+	}
+	if rm := lastOf(drain(guest), "room"); rm == nil || !rm.Room.Private || rm.Room.InviteCode != "" {
+		t.Fatalf("guests get the settings but not the invite code: %+v", rm)
+	}
+	host := &Client{Nickname: "host", send: make(chan []byte, 8)}
+	_ = r.join(host, "secret")
+	if rm := lastOf(drain(host), "room"); rm == nil || rm.Room.InviteCode != "secret" {
+		t.Fatalf("the owner gets the invite code: %+v", rm)
 	}
 }
 

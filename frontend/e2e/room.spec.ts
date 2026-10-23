@@ -40,13 +40,40 @@ test('two viewers: sync, chat, sync status, queue and handing over control', asy
 		await expect(p.locator('.player video')).toBeVisible();
 	}
 
-	// only the host has playback controls; pressing play starts everyone
+	// only the host has playback controls; a click on the picture starts everyone
 	await expect(guest.getByTitle('Play / pause (space)')).toHaveCount(0);
-	await host.getByTitle('Play / pause (space)').click();
+	await host.locator('.player video').click();
 	await expect(guest.locator('.player')).not.toHaveClass(/paused/);
 	await expect
 		.poll(() => guest.locator('video').evaluate((v: HTMLVideoElement) => v.currentTime))
 		.toBeGreaterThan(0.5);
+
+	// while watching, nothing is polled: updates arrive over the sockets
+	const requests: string[] = [];
+	const track = (r: { url: () => string }) => {
+		if (/\/api\/(rooms|media|folders)/.test(r.url())) requests.push(r.url());
+	};
+	host.on('request', track);
+	guest.on('request', track);
+	await host.waitForTimeout(4000); // the fixture is only 12s long
+	expect(requests).toEqual([]);
+	host.off('request', track);
+	guest.off('request', track);
+
+	// double-click toggles fullscreen without touching playback
+	const fullscreen = () => host.evaluate(() => !!document.fullscreenElement);
+	await host.locator('.player video').dblclick();
+	await expect.poll(fullscreen).toBe(true);
+	await host.locator('.player video').dblclick();
+	await expect.poll(fullscreen).toBe(false);
+	await host.waitForTimeout(400); // past the single-click delay
+	await expect(guest.locator('.player')).not.toHaveClass(/paused/);
+
+	// a single click pauses
+	await host.locator('.player video').click();
+	await expect(guest.locator('.player')).toHaveClass(/paused/);
+	await host.locator('.player video').click();
+	await expect(guest.locator('.player')).not.toHaveClass(/paused/);
 
 	// chat reaches the other viewer
 	await guest.getByPlaceholder('Message…').fill('hello from the couch');
@@ -75,6 +102,7 @@ test('two viewers: sync, chat, sync status, queue and handing over control', asy
 	host.once('dialog', (d) => d.accept());
 	await guestRow.getByTitle('Make host').click();
 	await expect(guest.getByText(`host: ${guestNick}`)).toBeVisible();
+	await expect(host.getByText(`host: ${guestNick}`)).toBeVisible();
 	await expect(guest.getByRole('button', { name: 'Delete room' })).toBeVisible();
 	await expect(host.getByRole('button', { name: 'Delete room' })).toHaveCount(0);
 

@@ -156,6 +156,7 @@
 			clearInterval(saver);
 			clearInterval(sync);
 			clearInterval(status);
+			clearTimeout(clickTimer);
 			video.removeEventListener('pause', save);
 			window.removeEventListener('pagehide', save);
 			document.removeEventListener('fullscreenchange', onFullscreen);
@@ -340,6 +341,21 @@
 		else container?.requestFullscreen();
 	}
 
+	// Click on the picture: play/pause; double-click: fullscreen. The click
+	// waits a moment so a double-click doesn't also toggle playback twice.
+	const DOUBLE_CLICK_MS = 220;
+	let clickTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function onVideoClick() {
+		clearTimeout(clickTimer);
+		clickTimer = setTimeout(togglePlay, DOUBLE_CLICK_MS);
+	}
+
+	function onVideoDblClick() {
+		clearTimeout(clickTimer);
+		toggleFullscreen();
+	}
+
 	function onKey(e: KeyboardEvent) {
 		const t = e.target as HTMLElement;
 		if (t.closest('input, textarea, select, [contenteditable]') || e.ctrlKey || e.metaKey) return;
@@ -382,6 +398,9 @@
 		onended={() => setStalled(false)}
 		onprogress={updateBuffered}
 		ontimeupdate={updateBuffered}
+		onclick={onVideoClick}
+		ondblclick={onVideoDblClick}
+		class:clickable={room.canControl}
 		crossorigin="anonymous"
 		playsinline
 	>
@@ -541,6 +560,10 @@
 		display: block;
 		width: 100%;
 		height: 100%;
+	}
+
+	video.clickable {
+		cursor: pointer;
 	}
 
 	.overlay {

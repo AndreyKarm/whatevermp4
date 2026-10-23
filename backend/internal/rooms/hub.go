@@ -55,6 +55,11 @@ func (h *Hub) Live() map[string]LiveRoom {
 	return out
 }
 
+// changed tells the rooms list that a room's viewers or playback changed.
+func (h *Hub) changed(id string) {
+	h.bus.Send(events.Event{Type: "rooms", Op: "UPDATE", ID: id})
+}
+
 // mediaDurations is the rooms' mediaLookup: ready media and their lengths.
 func (h *Hub) mediaDurations(ctx context.Context, ids []string) (map[string]float64, error) {
 	rows, err := h.db.Query(ctx, `
@@ -88,16 +93,17 @@ func (h *Hub) Join(ctx context.Context, id, invite string, c *Client) error {
 		var code *string
 		var raw []byte
 		if err := h.db.QueryRow(ctx, `
-			SELECT owner_name, state, everyone_controls, controllers, private, invite_code
+			SELECT name, owner_name, state, everyone_controls, controllers, private,
+				password_hash IS NOT NULL, invite_code
 			FROM rooms WHERE id=$1`, id).
-			Scan(&a.Owner, &raw, &a.Everyone, &a.Controllers, &a.Private, &code); err != nil {
+			Scan(&a.Name, &a.Owner, &raw, &a.Everyone, &a.Controllers, &a.Private, &a.HasPassword, &code); err != nil {
 			return err
 		}
 		if code != nil {
 			a.InviteCode = *code
 		}
 		r = newRoom(id, a)
-		r.onChange = func() { h.bus.Publish("rooms") }
+		r.onChange = func() { h.changed(id) }
 		r.lookup = h.mediaDurations
 		_ = json.Unmarshal(raw, &r.state)
 		if r.state.Rate <= 0 {
@@ -115,7 +121,7 @@ func (h *Hub) Join(ctx context.Context, id, invite string, c *Client) error {
 	if err := r.join(c, invite); err != nil {
 		return err
 	}
-	h.bus.Publish("rooms")
+	h.changed(id)
 	return nil
 }
 
@@ -151,7 +157,7 @@ func (h *Hub) Remove(id string) {
 func (h *Hub) Leave(c *Client) {
 	if c.room != nil {
 		c.room.leave(c)
-		h.bus.Publish("rooms")
+		h.changed(c.room.ID)
 	}
 }
 

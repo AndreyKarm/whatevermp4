@@ -1,4 +1,4 @@
-import type { ChatMessage, RoomIn, RoomMember, RoomOut, RoomState } from './types';
+import type { ChatMessage, RoomIn, RoomInfo, RoomMember, RoomOut, RoomState } from './types';
 
 // The backend closes with 1008 (policy violation) when the room doesn't exist or was deleted.
 const CLOSE_ROOM_GONE = 1008;
@@ -29,6 +29,8 @@ export class RoomSocket {
 	owner = $state('');
 	everyone = $state(false);
 	controllers = $state<string[]>([]);
+	/** Settings pushed by the server on join and whenever the owner changes them. */
+	info = $state<RoomInfo | null>(null);
 	members = $state<RoomMember[]>([]);
 	chat = $state<ChatMessage[]>([]);
 	isHolding = $state(false);
@@ -138,9 +140,15 @@ export class RoomSocket {
 			case 'state':
 				this.state = msg.state;
 				this.isHolding = msg.holding ?? false;
-				this.owner = msg.owner ?? '';
-				this.everyone = msg.everyone ?? false;
-				this.controllers = msg.controllers ?? [];
+				break;
+			case 'queue':
+				if (this.state) this.state = { ...this.state, queue: msg.queue ?? [] };
+				break;
+			case 'room':
+				this.info = msg.room;
+				this.owner = msg.room.owner;
+				this.everyone = msg.room.everyone;
+				this.controllers = msg.room.controllers;
 				break;
 			case 'members':
 				this.members = msg.members ?? [];
