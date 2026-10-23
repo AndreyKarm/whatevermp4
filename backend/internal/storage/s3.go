@@ -228,6 +228,33 @@ func (s *Storage) DeleteKey(ctx context.Context, key string) error {
 	return err
 }
 
+// ObjectSize returns the stored size of key.
+func (s *Storage) ObjectSize(ctx context.Context, key string) (int64, error) {
+	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.bucket, Key: &key})
+	if err != nil {
+		return 0, err
+	}
+	return aws.ToInt64(out.ContentLength), nil
+}
+
+// PrefixSize sums the sizes of everything under prefix + "/".
+func (s *Storage) PrefixSize(ctx context.Context, prefix string) (int64, error) {
+	p := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
+		Bucket: &s.bucket, Prefix: aws.String(prefix + "/"),
+	})
+	var n int64
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			return 0, err
+		}
+		for _, o := range page.Contents {
+			n += aws.ToInt64(o.Size)
+		}
+	}
+	return n, nil
+}
+
 func (s *Storage) DeletePrefix(ctx context.Context, prefix string) error {
 	if prefix == "" {
 		return nil

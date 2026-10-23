@@ -60,11 +60,16 @@ func variants(p *Plan) []variant {
 	return vs
 }
 
-// RunHLS writes out/master.m3u8, out/stream_{name}.m3u8, out/init_{name}.mp4, out/seg_{name}_*.m4s
-func RunHLS(ctx context.Context, src, out string, p *Plan) error {
+// RunHLS writes out/master.m3u8, out/stream_{name}.m3u8, out/init_{name}.mp4,
+// out/seg_{name}_*.m4s. report (may be nil) gets the fraction done.
+func RunHLS(ctx context.Context, src, out string, p *Plan, enc Encoder, report func(float64)) error {
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return err
 	}
+	return runProgress(ctx, p.Duration, report, hlsArgs(src, out, p, enc)...)
+}
+
+func hlsArgs(src, out string, p *Plan, enc Encoder) []string {
 	vs := variants(p)
 
 	args := []string{"-y", "-hide_banner", "-loglevel", "error", "-i", src}
@@ -97,24 +102,7 @@ func RunHLS(ctx context.Context, src, out string, p *Plan) error {
 			args = append(args, fmt.Sprintf("-c:v:%d", i), "copy")
 			continue
 		}
-		crf := "20"
-		if v.maxRateK > 0 {
-			crf = "23"
-			args = append(args,
-				fmt.Sprintf("-maxrate:v:%d", i), fmt.Sprintf("%dk", v.maxRateK),
-				fmt.Sprintf("-bufsize:v:%d", i), fmt.Sprintf("%dk", 2*v.maxRateK))
-		}
-		if v.height > 0 {
-			args = append(args, fmt.Sprintf("-filter:v:%d", i), fmt.Sprintf("scale=-2:%d", v.height))
-		}
-		args = append(args,
-			fmt.Sprintf("-c:v:%d", i), "libx264",
-			fmt.Sprintf("-preset:v:%d", i), "veryfast",
-			fmt.Sprintf("-crf:v:%d", i), crf,
-			fmt.Sprintf("-pix_fmt:v:%d", i), "yuv420p",
-			fmt.Sprintf("-profile:v:%d", i), "high",
-			fmt.Sprintf("-sc_threshold:v:%d", i), "0",
-			fmt.Sprintf("-force_key_frames:v:%d", i), keyframes)
+		args = append(args, enc.videoArgs(i, v, keyframes)...)
 	}
 	for i, a := range audio {
 		if a.Copy {
@@ -161,7 +149,7 @@ func RunHLS(ctx context.Context, src, out string, p *Plan) error {
 		"-hls_segment_filename", filepath.Join(out, "seg_%v_%05d.m4s"),
 		filepath.Join(out, "stream_%v.m3u8"),
 	)
-	return run(ctx, "ffmpeg", args...)
+	return args
 }
 
 func Poster(ctx context.Context, src, dst string, duration float64) error {

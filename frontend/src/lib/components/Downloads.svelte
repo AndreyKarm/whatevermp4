@@ -2,6 +2,7 @@
 	import { X } from '@lucide/svelte';
 	import { apiFetch } from '#lib/api.ts';
 	import { uploader } from '#lib/upload.svelte.ts';
+	import { formatBytes as size } from '#lib/bytes.ts';
 	import type { TorrentItem } from '#lib/types.ts';
 
 	/** In-flight work that doesn't have a library card yet: the browser upload and torrents. */
@@ -11,7 +12,9 @@
 
 	// Finished torrents already show up as media; keep failures visible.
 	const active = $derived(torrents.filter((t) => t.status !== 'done' && t.status !== 'cancelled'));
-	const visible = $derived(uploader.busy || !!uploader.error || active.length > 0);
+	const visible = $derived(
+		uploader.busy || !!uploader.error || uploader.queue.length > 0 || active.length > 0
+	);
 
 	async function cancel(id: string) {
 		try {
@@ -19,12 +22,6 @@
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
 		}
-	}
-
-	function size(n: number) {
-		if (n < 1024 ** 2) return `${(n / 1024).toFixed(0)} KB`;
-		if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-		return `${(n / 1024 ** 3).toFixed(2)} GB`;
 	}
 </script>
 
@@ -58,6 +55,21 @@
 					<p class="error-text">Upload failed: {uploader.error}</p>
 				</li>
 			{/if}
+			{#each uploader.queue as q, i (i)}
+				<li>
+					<div class="row">
+						<span class="name" title={q.file.name}>{q.file.name}</span>
+						<span class="meta">waiting · {size(q.file.size)}</span>
+						<button
+							class="btn-icon"
+							title="Don't upload"
+							onclick={() => uploader.queue.splice(i, 1)}
+						>
+							<X size={14} />
+						</button>
+					</div>
+				</li>
+			{/each}
 			{#each active as t (t.id)}
 				<li>
 					<div class="row">

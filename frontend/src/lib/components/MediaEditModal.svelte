@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { Play, RefreshCw, Trash2 } from '@lucide/svelte';
+	import { FileX, Play, RefreshCw, Trash2 } from '@lucide/svelte';
 	import { apiFetch } from '#lib/api.ts';
+	import { formatBytes } from '#lib/bytes.ts';
 	import { folderOptions } from '#lib/folders.ts';
 	import type { Folder, MediaItem } from '#lib/types.ts';
 	import Modal from './Modal.svelte';
@@ -19,6 +20,15 @@
 	} = $props();
 
 	const folderChoices = $derived(folderOptions(folders));
+
+	const sizeInfo = $derived.by(() => {
+		if (!item) return '';
+		const parts = [];
+		if (item.rawDeleted) parts.push('Original deleted');
+		else if (item.rawBytes != null) parts.push(`Original ${formatBytes(item.rawBytes)}`);
+		if (item.hlsBytes != null) parts.push(`Stream ${formatBytes(item.hlsBytes)}`);
+		return parts.join(' · ');
+	});
 
 	let filename = $state('');
 	let folderId = $state('');
@@ -85,6 +95,18 @@
 		run(() => apiFetch(`/api/media/${id}/reprocess`, { method: 'POST' }));
 	}
 
+	function deleteOriginal() {
+		if (!item) return;
+		if (
+			!confirm(
+				'Delete the original file? The movie still plays, but it can no longer be downloaded or re-processed.'
+			)
+		)
+			return;
+		const id = item.id;
+		run(() => apiFetch(`/api/media/${id}/delete-original`, { method: 'POST' }), false);
+	}
+
 	function remove() {
 		if (!item) return;
 		if (!confirmDelete) {
@@ -137,7 +159,7 @@
 					<Play size={14} /> Watch together
 				</button>
 			{/if}
-			{#if item.status === 'ready' || item.status === 'failed'}
+			{#if (item.status === 'ready' || item.status === 'failed') && !item.rawDeleted}
 				<button
 					class="btn btn-outline"
 					disabled={busy}
@@ -147,11 +169,22 @@
 					<RefreshCw size={14} /> Re-process
 				</button>
 			{/if}
+			{#if item.status === 'ready' && !item.rawDeleted}
+				<button
+					class="btn btn-outline"
+					disabled={busy}
+					title="Free the space of the uploaded original; the movie keeps playing"
+					onclick={deleteOriginal}
+				>
+					<FileX size={14} /> Delete original
+				</button>
+			{/if}
 			<button class="btn btn-danger" disabled={busy} onclick={remove}>
 				<Trash2 size={14} />
 				{confirmDelete ? 'Click again to delete' : 'Delete'}
 			</button>
 		</div>
+		{#if sizeInfo}<p class="meta">{sizeInfo}</p>{/if}
 		{#if item.error}<p class="error-text">Last error: {item.error}</p>{/if}
 		{#if error}<p class="error-text">{error}</p>{/if}
 	{/if}

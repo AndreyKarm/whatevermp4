@@ -1,0 +1,19 @@
+# GPU transcoding with NVENC. Needs the NVIDIA Container Toolkit (on Windows:
+# Docker Desktop with the WSL 2 backend and a current NVIDIA driver).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up --build
+#
+# The worker test-encodes at startup and falls back to libx264 (logged) if
+# the GPU isn't usable.
+services:
+  worker:
+    environment:
+      HW_ENCODER: nvenc
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

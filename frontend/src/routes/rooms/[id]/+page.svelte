@@ -1,37 +1,64 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { apiFetch } from '#lib/api.ts';
+	import { apiFetch, apiPost } from '#lib/api.ts';
 	import { onChange } from '#lib/events.ts';
 	import { getProgress } from '#lib/progress.ts';
 	import { nickname } from '#lib/nickname.svelte.ts';
 	import { PUBLIC_API_URL } from '$app/env/public';
-	import { RoomSocket } from '#lib/room.svelte.ts';
+	import { RoomSocket, saveInvite, savedInvite } from '#lib/room.svelte.ts';
 	import Player from '#lib/components/Player.svelte';
 	import { page } from '$app/state';
-	import type { Folder, MediaItem, RoomItem } from '#lib/types.ts';
+	import type { Folder, LockedRoom, MediaItem, RoomItem, RoomMember } from '#lib/types.ts';
 	import { pathLabel } from '#lib/folders.ts';
+	import { byFilename, nextEpisodes } from '#lib/episodes.ts';
 	import { resolve } from '$app/paths';
 	import { browser } from '$app/env';
 	import {
+		ArrowDown,
 		ArrowLeft,
+		ArrowUp,
+		Copy,
+		Crown,
+		Gamepad2,
+		ListPlus,
+		ListVideo,
+		Lock,
 		MessageSquare,
 		PanelRightClose,
 		PanelRightOpen,
 		Send,
+		SkipForward,
 		Trash2,
-		Users
+		Users,
+		X
 	} from '@lucide/svelte';
 
 	const roomId = $derived(page.params.id ?? '');
 
 	let room = $state<RoomSocket | null>(null);
 	let info = $state<RoomItem | null>(null);
+	let lockedInfo = $state<LockedRoom | null>(null);
 	let mediaItem = $state<MediaItem | null>(null);
 	let library = $state<MediaItem[]>([]);
 	let folders = $state<Folder[]>([]);
 	let actionError = $state<string | null>(null);
 	let message = $state('');
 	let chatEl: HTMLDivElement | undefined = $state();
+
+	// Private rooms: the invite code from the link (?invite=…) or remembered
+	// from an earlier visit or a password; the socket reconnects when it changes.
+	let invite = $state<string | null>(null);
+	let password = $state('');
+	let unlocking = $state(false);
+	let newPassword = $state('');
+	let copied = $state(false);
+
+	$effect.pre(() => {
+		if (!browser || !roomId) return;
+		const fromLink = page.url.searchParams.get('invite');
+		if (fromLink) saveInvite(roomId, fromLink);
+		invite = fromLink ?? savedInvite(roomId);
+	});
 
 	// Side panel (members, settings, chat) can be hidden to give the player
 	// the full width; remembered per viewer.
@@ -63,24 +90,55 @@
 		if (!collapsed) seenChat = room?.chat.length ?? 0;
 	});
 
-	// Connect once a nickname is chosen; reconnect if it changes.
+	// Connect once a nickname is chosen; reconnect if it or the invite changes.
 	$effect(() => {
 		if (!roomId || !nickname.hasNickname) return;
-		const r = new RoomSocket(roomId, nickname.name, PUBLIC_API_URL);
+		const r = new RoomSocket(roomId, nickname.name, PUBLIC_API_URL, invite);
 		r.connect();
 		room = r;
 		return () => r.close();
 	});
 
-	$effect(() => {
-		if (!roomId) return;
-		apiFetch<RoomItem>(`/api/rooms/${roomId}`)
-			.then((r) => (info = r))
+	function loadInfo() {
+		const headers: Record<string, string> = invite ? { 'X-Room-Invite': invite } : {};
+		apiFetch<RoomItem | LockedRoom>(`/api/rooms/${roomId}`, { headers })
+			.then((r) => {
+				if ('locked' in r) {
+					lockedInfo = r;
+					info = null;
+					return;
+				}
+				lockedInfo = null;
+				info = r;
+				// the owner gets the code back; keep it for invite links and the socket
+				if (r.inviteCode && r.inviteCode !== invite) {
+					saveInvite(roomId, r.inviteCode);
+					invite = r.inviteCode;
+				}
+			})
 			.catch((e) => (actionError = e.message));
+	}
+
+	$effect(() => {
+		if (!roomId || !nickname.hasNickname) return;
+		loadInfo();
+		return onChange(['rooms'], loadInfo);
 	});
 
+	const locked = $derived(!!room?.locked || !!lockedInfo);
 	const mediaId = $derived(room?.state?.mediaId);
 	const isOwner = $derived(!!room && room.owner === nickname.name);
+	const byId = $derived(new Map(library.map((m) => [m.id, m])));
+	const inviteLink = $derived(
+		info?.inviteCode && browser
+			? `${page.url.origin}${resolve('/rooms/[id]', { id: roomId })}?invite=${info.inviteCode}`
+			: ''
+	);
+
+	// One row per nickname (the same name can be connected twice).
+	const members = $derived<RoomMember[]>([
+		...new Map((room?.members ?? []).map((m) => [m.name, m])).values()
+	]);
 
 	function loadMedia(id: string) {
 		apiFetch<MediaItem>(`/api/media/${id}`)
@@ -107,10 +165,8 @@
 			const label = m.folderId ? pathLabel(folders, m.folderId) || 'Library' : 'Library';
 			(groups[label] ??= []).push(m);
 		}
-		const byName = (a: MediaItem, b: MediaItem) =>
-			a.filename.localeCompare(b.filename, undefined, { numeric: true });
 		return Object.entries(groups)
-			.map(([label, items]) => ({ label, items: items.sort(byName) }))
+			.map(([label, items]) => ({ label, items: items.sort(byFilename) }))
 			.sort((a, b) =>
 				a.label === 'Library' ? -1 : b.label === 'Library' ? 1 : a.label.localeCompare(b.label)
 			);
@@ -127,9 +183,9 @@
 		return onChange(['media_files'], () => loadMedia(id));
 	});
 
-	// Ready media for the "change media" picker
+	// Ready media for the picker and the queue's titles
 	$effect(() => {
-		if (!room?.canControl) return;
+		if (!room?.connected) return;
 		loadLibrary();
 		return onChange(['media_files', 'folders'], loadLibrary);
 	});
@@ -146,16 +202,89 @@
 		message = '';
 	}
 
-	async function toggleEveryone(e: Event) {
-		const everyoneControls = (e.target as HTMLInputElement).checked;
+	function errorText(err: unknown) {
+		return err instanceof Error ? err.message : String(err);
+	}
+
+	async function patchRoom(body: Record<string, unknown>) {
 		try {
-			await apiFetch(`/api/rooms/${roomId}`, {
-				method: 'PATCH',
-				body: JSON.stringify({ everyoneControls })
-			});
+			await apiFetch(`/api/rooms/${roomId}`, { method: 'PATCH', body: JSON.stringify(body) });
+			loadInfo();
 		} catch (err) {
-			actionError = err instanceof Error ? err.message : String(err);
+			actionError = errorText(err);
 		}
+	}
+
+	function toggleController(name: string) {
+		const list = room?.controllers ?? [];
+		patchRoom({
+			controllers: list.includes(name) ? list.filter((n) => n !== name) : [...list, name]
+		});
+	}
+
+	function makeHost(name: string) {
+		if (!confirm(`Make ${name} the host? You'll lose the host settings.`)) return;
+		patchRoom({ ownerName: name });
+	}
+
+	function setPassword(e: SubmitEvent) {
+		e.preventDefault();
+		patchRoom({ password: newPassword });
+		newPassword = '';
+	}
+
+	async function copyInvite() {
+		try {
+			await navigator.clipboard.writeText(inviteLink);
+			copied = true;
+			setTimeout(() => (copied = false), 2000);
+		} catch {
+			actionError = 'Copy failed; select the link and copy it yourself.';
+		}
+	}
+
+	async function unlock(e: SubmitEvent) {
+		e.preventDefault();
+		unlocking = true;
+		try {
+			const { inviteCode } = await apiPost<{ inviteCode: string }>(`/api/rooms/${roomId}/access`, {
+				password
+			});
+			saveInvite(roomId, inviteCode);
+			invite = inviteCode;
+			password = '';
+			actionError = null;
+			loadInfo();
+		} catch (err) {
+			actionError = errorText(err);
+		} finally {
+			unlocking = false;
+		}
+	}
+
+	function setQueue(queue: string[]) {
+		room?.send({ type: 'queue', queue });
+	}
+
+	function moveInQueue(i: number, delta: number) {
+		const q = [...(room?.queue ?? [])];
+		const j = i + delta;
+		if (j < 0 || j >= q.length) return;
+		[q[i], q[j]] = [q[j], q[i]];
+		setQueue(q);
+	}
+
+	function queueNextEpisodes() {
+		if (!mediaItem) return;
+		const queued = new Set(room?.queue ?? []);
+		const add = nextEpisodes(library, mediaItem)
+			.map((m) => m.id)
+			.filter((id) => !queued.has(id));
+		if (!add.length) {
+			actionError = 'No later episodes in this folder.';
+			return;
+		}
+		setQueue([...(room?.queue ?? []), ...add]);
 	}
 
 	async function deleteRoom() {
@@ -164,19 +293,33 @@
 			await apiFetch(`/api/rooms/${roomId}`, { method: 'DELETE' });
 			goto(resolve('/'));
 		} catch (err) {
-			actionError = err instanceof Error ? err.message : String(err);
+			actionError = errorText(err);
 		}
+	}
+
+	// Sync health of a member, from its last status report.
+	function syncClass(m: RoomMember) {
+		if (m.drift == null) return '';
+		const off = Math.abs(m.drift);
+		return off < 0.3 ? 'sync-good' : off < 1 ? 'sync-warn' : 'sync-bad';
+	}
+
+	function fmtDrift(d: number) {
+		return `${d >= 0 ? '+' : '−'}${Math.abs(d).toFixed(1)}s`;
 	}
 </script>
 
-<svelte:head><title>{info?.name ?? 'Watch Party'} · whatevermp4</title></svelte:head>
+<svelte:head
+	><title>{info?.name ?? lockedInfo?.name ?? 'Watch Party'} · whatevermp4</title></svelte:head
+>
 
 <div class="room-page">
 	<section class="stage">
 		<div class="head">
 			<a href={resolve('/')} class="btn-icon back" title="Back to rooms"><ArrowLeft size={18} /></a>
-			<h1>{info?.name ?? 'Watch Party'}</h1>
-			{#if room}
+			<h1>{info?.name ?? lockedInfo?.name ?? 'Watch Party'}</h1>
+			{#if info?.private}<span class="meta" title="Private room"><Lock size={12} /></span>{/if}
+			{#if room && !locked}
 				<span class="meta">host: {room.owner || '…'}</span>
 				{#if !room.connected && !room.fatal}
 					<span class="meta reconnecting">reconnecting…</span>
@@ -217,6 +360,26 @@
 		<div class="screen">
 			{#if room?.fatal}
 				<p class="error-text">This room is gone ({room.fatal}).</p>
+			{:else if locked}
+				<div class="panel lock">
+					<Lock size={32} />
+					<p class="lock-title">This room is private</p>
+					{#if lockedInfo?.hasPassword ?? info?.hasPassword}
+						<form class="lock-form" onsubmit={unlock}>
+							<input
+								class="input"
+								type="password"
+								placeholder="Room password"
+								aria-label="Room password"
+								autocomplete="off"
+								bind:value={password}
+							/>
+							<button class="btn btn-primary" disabled={!password || unlocking}>Join</button>
+						</form>
+					{:else}
+						<p class="muted">Ask the host for an invite link.</p>
+					{/if}
+				</div>
 			{:else if room && mediaItem?.playbackUrl}
 				<!-- remount per movie; a re-process unmounts it anyway (status → processing) -->
 				{#key mediaItem.id}
@@ -234,28 +397,190 @@
 		{/if}
 	</section>
 
-	<aside class="side" hidden={collapsed}>
+	<aside class="side" hidden={collapsed || locked}>
 		<div class="block">
-			<h2 class="panel-title"><Users size={16} /> Watching ({room?.members.length ?? 0})</h2>
+			<h2 class="panel-title"><Users size={16} /> Watching ({members.length})</h2>
 			<ul class="members">
-				{#each room?.members ?? [] as m, i (i)}
+				{#each members as m (m.name)}
+					{@const controls = room?.controllers.includes(m.name)}
 					<li>
+						{#if room?.canControl && m.drift != null}
+							<span
+								class="dot {syncClass(m)}"
+								title="{fmtDrift(m.drift)} from the room, {Math.round(m.ahead ?? 0)}s buffered"
+							></span>
+						{/if}
 						<span class="name">{m.name}</span>
-						{#if m.name === room?.owner}<span class="badge">host</span>{/if}
+						{#if m.name === room?.owner}
+							<span class="badge">host</span>
+						{:else if controls}
+							<span class="badge ctl">controls</span>
+						{/if}
 						{#if m.buffering}<span class="meta status-processing">buffering</span>{/if}
+						{#if room?.canControl && m.drift != null}
+							<span class="meta sync {syncClass(m)}">
+								{fmtDrift(m.drift)} · {Math.round(m.ahead ?? 0)}s buf
+							</span>
+						{/if}
+						{#if isOwner && m.name !== room?.owner}
+							<span class="member-actions">
+								<button
+									class="btn-icon"
+									title={controls ? 'Take away control' : 'Let them control playback'}
+									aria-pressed={controls}
+									onclick={() => toggleController(m.name)}
+								>
+									<Gamepad2 size={14} />
+								</button>
+								<button class="btn-icon" title="Make host" onclick={() => makeHost(m.name)}>
+									<Crown size={14} />
+								</button>
+							</span>
+						{/if}
 					</li>
 				{/each}
 			</ul>
-			{#if isOwner}
+			{#if isOwner && info}
 				<label class="toggle">
-					<input type="checkbox" checked={room?.everyone} onchange={toggleEveryone} />
+					<input
+						type="checkbox"
+						checked={room?.everyone}
+						onchange={(e) =>
+							patchRoom({ everyoneControls: (e.target as HTMLInputElement).checked })}
+					/>
 					Everyone can control playback
 				</label>
+				<label class="toggle">
+					<input
+						type="checkbox"
+						checked={info.private}
+						onchange={(e) => patchRoom({ private: (e.target as HTMLInputElement).checked })}
+					/>
+					Private (not listed, invite only)
+				</label>
+				{#if info.private}
+					<div class="invite">
+						<input class="input" readonly value={inviteLink} aria-label="Invite link" />
+						<button class="btn-icon" title="Copy invite link" onclick={copyInvite}>
+							<Copy size={14} />
+						</button>
+					</div>
+					<div class="invite-actions">
+						<span class="meta">{copied ? 'Copied' : ''}</span>
+						<button
+							class="meta link"
+							title="Old links stop working"
+							onclick={() => patchRoom({ resetInvite: true })}
+						>
+							New link
+						</button>
+					</div>
+					<form class="invite" onsubmit={setPassword}>
+						<input
+							class="input"
+							type="password"
+							autocomplete="new-password"
+							placeholder={info.hasPassword ? 'New password' : 'Password (optional)'}
+							aria-label="Room password"
+							bind:value={newPassword}
+						/>
+						<button class="btn btn-outline" disabled={!newPassword}>Set</button>
+					</form>
+					{#if info.hasPassword}
+						<button class="meta link" onclick={() => patchRoom({ password: '' })}>
+							Remove password
+						</button>
+					{/if}
+				{/if}
 				<button class="btn btn-danger" onclick={deleteRoom}>
 					<Trash2 size={14} /> Delete room
 				</button>
 			{/if}
 		</div>
+
+		{#if room && (room.canControl || room.queue.length)}
+			<div class="block">
+				<h2 class="panel-title"><ListVideo size={16} /> Up next ({room.queue.length})</h2>
+				{#if room.queue.length}
+					<ol class="queue">
+						{#each room.queue as id, i (id)}
+							<li>
+								<span class="name" title={byId.get(id)?.filename}>
+									{byId.get(id)?.filename ?? '…'}
+								</span>
+								{#if room.canControl}
+									<button
+										class="btn-icon"
+										title="Move up"
+										disabled={i === 0}
+										onclick={() => moveInQueue(i, -1)}
+									>
+										<ArrowUp size={14} />
+									</button>
+									<button
+										class="btn-icon"
+										title="Move down"
+										disabled={i === room.queue.length - 1}
+										onclick={() => moveInQueue(i, 1)}
+									>
+										<ArrowDown size={14} />
+									</button>
+									<button
+										class="btn-icon"
+										title="Remove"
+										onclick={() => setQueue(room!.queue.filter((q) => q !== id))}
+									>
+										<X size={14} />
+									</button>
+								{/if}
+							</li>
+						{/each}
+					</ol>
+				{:else}
+					<p class="muted">Nothing queued. The room stops when this ends.</p>
+				{/if}
+				{#if room.canControl}
+					<div class="queue-actions">
+						{#if room.queue.length}
+							<button class="btn btn-outline" onclick={() => room?.send({ type: 'next' })}>
+								<SkipForward size={14} /> Play next
+							</button>
+						{/if}
+						{#if mediaItem}
+							<button
+								class="btn btn-outline"
+								title="Add the later episodes of this folder, in season/episode order"
+								onclick={queueNextEpisodes}
+							>
+								<ListPlus size={14} /> Next episodes
+							</button>
+						{/if}
+					</div>
+					{#if library.length}
+						<select
+							class="input"
+							aria-label="Add to queue"
+							value=""
+							onchange={(e) => {
+								const el = e.target as HTMLSelectElement;
+								if (el.value && !room?.queue.includes(el.value))
+									setQueue([...(room?.queue ?? []), el.value]);
+								el.value = '';
+							}}
+						>
+							<option value="" disabled>Add to queue…</option>
+							{#each pickerGroups as g (g.label)}
+								<optgroup label={g.label}>
+									{#each g.items as m (m.id)}
+										<option value={m.id}>{m.filename}</option>
+									{/each}
+								</optgroup>
+							{/each}
+						</select>
+					{/if}
+				{/if}
+			</div>
+		{/if}
 
 		<h2 class="panel-title chat-title"><MessageSquare size={16} /> Chat</h2>
 		<div class="chat" bind:this={chatEl}>
@@ -357,6 +682,28 @@
 		min-height: 0;
 	}
 
+	.lock {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.75rem;
+		width: min(100%, 24rem);
+		text-align: center;
+		color: var(--color-muted);
+	}
+
+	.lock-title {
+		color: var(--color-text);
+		font-weight: 700;
+		text-transform: uppercase;
+	}
+
+	.lock-form {
+		display: flex;
+		gap: 0.5rem;
+		width: 100%;
+	}
+
 	.alert {
 		padding: 0.5rem 1rem;
 		border: 1px solid color-mix(in srgb, var(--color-accent), transparent 60%);
@@ -370,7 +717,7 @@
 		display: flex;
 		flex-direction: column;
 		min-height: 24rem;
-		overflow: hidden;
+		overflow: hidden auto;
 		border-radius: var(--radius);
 		background-color: var(--color-secondary);
 	}
@@ -393,23 +740,90 @@
 		border-bottom: 1px solid var(--color-border);
 	}
 
-	.members {
+	.members,
+	.queue {
 		display: flex;
 		flex-direction: column;
 		gap: 0.25rem;
+		margin: 0;
+		padding: 0;
 		font-size: 14px;
+		list-style: none;
 	}
 
-	.members li {
+	.members li,
+	.queue li {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
-		gap: 0.5rem;
+		gap: 0.25rem 0.5rem;
 	}
 
 	.name {
+		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.queue .name {
+		flex: 1;
+	}
+
+	.queue .btn-icon,
+	.member-actions .btn-icon {
+		min-width: 26px;
+		height: 26px;
+		color: var(--color-gray);
+	}
+
+	.member-actions {
+		display: flex;
+		margin-left: auto;
+	}
+
+	.member-actions [aria-pressed='true'] {
+		color: var(--color-primary);
+	}
+
+	.ctl {
+		border: 1px solid var(--color-primary);
+		background: none;
+		color: var(--color-primary);
+	}
+
+	/* sync health: drift from the room clock */
+	.dot {
+		flex-shrink: 0;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background-color: var(--color-gray);
+	}
+
+	.dot.sync-good {
+		background-color: var(--color-ok);
+	}
+
+	.dot.sync-warn {
+		background-color: var(--color-warn);
+	}
+
+	.dot.sync-bad {
+		background-color: var(--color-accent);
+	}
+
+	.sync {
+		width: 100%;
+		padding-left: 1rem;
+	}
+
+	.sync.sync-warn {
+		color: var(--color-warn);
+	}
+
+	.sync.sync-bad {
+		color: var(--color-accent);
 	}
 
 	.toggle {
@@ -424,6 +838,36 @@
 		height: 18px;
 	}
 
+	.invite {
+		display: flex;
+		gap: 0.5rem;
+	}
+
+	.invite .input {
+		padding: 0.5rem 0.75rem;
+		font-size: 12px;
+	}
+
+	.invite-actions {
+		display: flex;
+		justify-content: space-between;
+	}
+
+	.link:hover {
+		color: var(--color-primary);
+	}
+
+	.queue-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+
+	.queue-actions .btn {
+		padding: 0.4rem 0.75rem;
+		font-size: 11px;
+	}
+
 	.chat-title {
 		padding: 1rem 1.25rem;
 		border-bottom: 1px solid var(--color-border);
@@ -434,6 +878,7 @@
 		flex: 1;
 		flex-direction: column;
 		gap: 0.5rem;
+		min-height: 8rem;
 		overflow-y: auto;
 		padding: 1rem 1.25rem;
 		font-size: 14px;

@@ -139,6 +139,15 @@
 			}
 		}, 500);
 
+		// Report this viewer's sync health (drift from the room clock and how
+		// much is buffered) so controllers can see who's behind.
+		const status = setInterval(() => {
+			if (!room.state || video.readyState === 0) return;
+			const end = Number.isFinite(video.duration) ? video.duration : Infinity;
+			const drift = video.currentTime - Math.min(room.getTargetPosition(), end);
+			room.send({ type: 'status', drift, ahead: bufferedAhead(video) });
+		}, 2000);
+
 		const onFullscreen = () => (fullscreen = document.fullscreenElement === container);
 		document.addEventListener('fullscreenchange', onFullscreen);
 
@@ -146,6 +155,7 @@
 			save();
 			clearInterval(saver);
 			clearInterval(sync);
+			clearInterval(status);
 			video.removeEventListener('pause', save);
 			window.removeEventListener('pagehide', save);
 			document.removeEventListener('fullscreenchange', onFullscreen);
@@ -226,6 +236,48 @@
 		buffered = Array.from({ length: b.length }, (_, i) => ({ start: b.start(i), end: b.end(i) }));
 	}
 
+	/** Seconds buffered past the playhead. */
+	function bufferedAhead(v: HTMLVideoElement) {
+		const t = v.currentTime;
+		for (let i = 0; i < v.buffered.length; i++) {
+			if (v.buffered.start(i) <= t + 0.1 && t <= v.buffered.end(i)) return v.buffered.end(i) - t;
+		}
+		return 0;
+	}
+
+	// Seek bar hover: the time under the pointer and its preview tile.
+	let hover = $state<{ x: number; width: number; t: number } | null>(null);
+
+	function onTimelineMove(e: PointerEvent) {
+		const el = e.currentTarget as HTMLElement;
+		const rect = el.getBoundingClientRect();
+		if (!duration || rect.width === 0) return;
+		const x = Math.min(Math.max(e.clientX - rect.left, 0), rect.width);
+		hover = { x, width: rect.width, t: (x / rect.width) * duration };
+	}
+
+	const preview = $derived.by(() => {
+		const th = item.thumbnails;
+		if (!hover || !th || th.count === 0) return null;
+		const index = Math.min(Math.floor(hover.t / th.interval), th.count - 1);
+		const perSheet = th.cols * th.rows;
+		const sheet = Math.floor(index / perSheet) + 1;
+		const cell = index % perSheet;
+		return {
+			url: `${base}/thumbs/sprite_${String(sheet).padStart(3, '0')}.jpg`,
+			pos: `-${(cell % th.cols) * th.width}px -${Math.floor(cell / th.cols) * th.height}px`,
+			width: th.width,
+			height: th.height
+		};
+	});
+
+	// Keep the tooltip inside the player.
+	const hoverLeft = $derived.by(() => {
+		if (!hover) return 0;
+		const half = (preview?.width ?? 48) / 2;
+		return Math.min(Math.max(hover.x, half), Math.max(hover.width - half, half));
+	});
+
 	function togglePlay() {
 		if (!videoEl || !room.canControl) return;
 		if (room.state?.playing) room.send({ type: 'pause' });
@@ -303,11 +355,7 @@
 			hasPlayed = true;
 			setStalled(false);
 		}}
-		onended={() => {
-			setStalled(false);
-			// stop the room at the end instead of letting its clock run on
-			if (room.canControl && room.state?.playing) room.send({ type: 'pause' });
-		}}
+		onended={() => setStalled(false)}
 		onprogress={updateBuffered}
 		ontimeupdate={updateBuffered}
 		crossorigin="anonymous"
@@ -335,7 +383,26 @@
 	{/if}
 
 	<div class="controls">
-		<div class="timeline">
+		<div
+			class="timeline"
+			role="presentation"
+			onpointermove={onTimelineMove}
+			onpointerleave={() => (hover = null)}
+		>
+			{#if hover}
+				<div class="hover" style:left="{hoverLeft}px">
+					{#if preview}
+						<div
+							class="thumb"
+							style:width="{preview.width}px"
+							style:height="{preview.height}px"
+							style:background-image="url('{preview.url}')"
+							style:background-position={preview.pos}
+						></div>
+					{/if}
+					<span>{fmt(hover.t)}</span>
+				</div>
+			{/if}
 			<div class="track">
 				{#each buffered as b, i (i)}
 					<div class="buffered" style:left={pct(b.start)} style:width={pct(b.end - b.start)}></div>
@@ -542,8 +609,38 @@
 		cursor: pointer;
 	}
 
+	/* disabled inputs swallow pointer events; let the timeline see them for the preview */
 	.scrub:disabled {
 		cursor: default;
+		pointer-events: none;
+	}
+
+	.hover {
+		position: absolute;
+		bottom: 1.25rem;
+		z-index: 1;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.25rem;
+		transform: translateX(-50%);
+		pointer-events: none;
+	}
+
+	.hover .thumb {
+		border: 1px solid rgb(255 255 255 / 0.6);
+		border-radius: 0.25rem;
+		background-color: black;
+		background-repeat: no-repeat;
+	}
+
+	.hover span {
+		padding: 0.1rem 0.4rem;
+		border-radius: 0.25rem;
+		background-color: rgb(0 0 0 / 0.8);
+		font-size: 11px;
+		font-weight: 700;
+		font-variant-numeric: tabular-nums;
 	}
 
 	.scrub::-webkit-slider-runnable-track {

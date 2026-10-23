@@ -7,6 +7,7 @@ import (
 	"liotom/whateverserver/internal/db"
 	"liotom/whateverserver/internal/events"
 	"liotom/whateverserver/internal/httpapi"
+	"liotom/whateverserver/internal/migrate"
 	"liotom/whateverserver/internal/rooms"
 	"liotom/whateverserver/internal/storage"
 	"log"
@@ -32,6 +33,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer pool.Close()
+	if err := migrate.Up(ctx, pool); err != nil {
+		log.Fatalf("migrate: %v", err)
+	}
 
 	st, err := storage.New(ctx, cfg)
 	if err != nil {

@@ -9,18 +9,25 @@ import (
 )
 
 type Client struct {
-	Nickname  string
-	conn      *websocket.Conn
-	send      chan []byte
-	room      *Room
-	buffering bool // guarded by room.mu
+	Nickname string
+	conn     *websocket.Conn
+	send     chan []byte
+	room     *Room
+
+	// guarded by room.mu
+	buffering bool
+	hasStatus bool
+	drift     float64
+	ahead     float64
 }
 
 func (c *Client) trySend(b []byte) {
 	select {
 	case c.send <- b:
 	default: // too slow, drop the connection
-		go c.conn.CloseNow()
+		if c.conn != nil {
+			go c.conn.CloseNow()
+		}
 	}
 }
 
@@ -46,7 +53,7 @@ func (c *Client) writeLoop(ctx context.Context) {
 }
 
 func (c *Client) readLoop(ctx context.Context) {
-	c.conn.SetReadLimit(8 << 10)
+	c.conn.SetReadLimit(64 << 10) // a queue message lists many IDs
 	for {
 		_, data, err := c.conn.Read(ctx)
 		if err != nil {
@@ -60,6 +67,6 @@ func (c *Client) readLoop(ctx context.Context) {
 			c.sendOut(Out{Type: "pong", T: in.T, Server: nowMs()})
 			continue
 		}
-		c.room.handle(c, in)
+		c.room.receive(ctx, c, in)
 	}
 }

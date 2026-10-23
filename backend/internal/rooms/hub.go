@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"liotom/whateverserver/internal/events"
 	"log"
+	"slices"
 	"sync"
 	"time"
 
@@ -46,6 +47,7 @@ func (h *Hub) Live() map[string]LiveRoom {
 			names = append(names, c.Nickname)
 		}
 		st := r.state
+		st.Queue = slices.Clone(st.Queue)
 		st.Position, st.UpdatedAt = r.posLocked(nowMs()), nowMs()
 		r.mu.Unlock()
 		out[r.ID] = LiveRoom{Members: names, State: st}
@@ -53,47 +55,79 @@ func (h *Hub) Live() map[string]LiveRoom {
 	return out
 }
 
-// Join loads the room (if needed) and adds the client atomically,
-// so the eviction loop can't remove a room mid-join.
-func (h *Hub) Join(ctx context.Context, id string, c *Client) error {
+// mediaDurations is the rooms' mediaLookup: ready media and their lengths.
+func (h *Hub) mediaDurations(ctx context.Context, ids []string) (map[string]float64, error) {
+	rows, err := h.db.Query(ctx, `
+		SELECT id, COALESCE(duration_sec, 0) FROM media_files
+		WHERE id = ANY($1) AND status = 'ready'`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]float64, len(ids))
+	for rows.Next() {
+		var id string
+		var d float64
+		if err := rows.Scan(&id, &d); err != nil {
+			return nil, err
+		}
+		out[id] = d
+	}
+	return out, rows.Err()
+}
+
+// Join loads the room (if needed) and adds the client atomically, so the
+// eviction loop can't remove a room mid-join. A private room needs its
+// invite code (ErrInviteRequired otherwise).
+func (h *Hub) Join(ctx context.Context, id, invite string, c *Client) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	r, ok := h.rooms[id]
 	if !ok {
-		var owner string
+		var a Access
+		var code *string
 		var raw []byte
-		var everyone bool
-		if err := h.db.QueryRow(ctx,
-			`SELECT owner_name, state, everyone_controls FROM rooms WHERE id=$1`, id).
-			Scan(&owner, &raw, &everyone); err != nil {
+		if err := h.db.QueryRow(ctx, `
+			SELECT owner_name, state, everyone_controls, controllers, private, invite_code
+			FROM rooms WHERE id=$1`, id).
+			Scan(&a.Owner, &raw, &a.Everyone, &a.Controllers, &a.Private, &code); err != nil {
 			return err
 		}
-		r = newRoom(id, owner, everyone)
+		if code != nil {
+			a.InviteCode = *code
+		}
+		r = newRoom(id, a)
 		r.onChange = func() { h.bus.Publish("rooms") }
+		r.lookup = h.mediaDurations
 		_ = json.Unmarshal(raw, &r.state)
 		if r.state.Rate <= 0 {
 			r.state.Rate = 1
 		}
 		r.state.Playing = false // never resume "playing" after a restart
+		// durations for the end timer once someone presses play
+		if ids := append([]string{r.state.MediaID}, r.state.Queue...); r.state.MediaID != "" {
+			if d, err := h.mediaDurations(ctx, ids); err == nil {
+				r.durations = d
+			}
+		}
 		h.rooms[id] = r
 	}
-	r.join(c)
+	if err := r.join(c, invite); err != nil {
+		return err
+	}
 	h.bus.Publish("rooms")
 	return nil
 }
 
-// SetEveryoneControls applies a settings change to a loaded room.
-func (h *Hub) SetEveryoneControls(id string, v bool) {
+// SetAccess applies a settings change (owner, controllers, privacy…) to a
+// loaded room.
+func (h *Hub) SetAccess(id string, a Access) {
 	h.mu.Lock()
 	r := h.rooms[id]
 	h.mu.Unlock()
-	if r == nil {
-		return
+	if r != nil {
+		r.setAccess(a)
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.everyone = v
-	r.broadcastLocked(r.stateMsgLocked())
 }
 
 // Remove unloads a deleted room and disconnects its clients.
@@ -105,6 +139,7 @@ func (h *Hub) Remove(id string) {
 	if r == nil {
 		return
 	}
+	r.stop()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.dirty = false
@@ -123,6 +158,9 @@ func (h *Hub) Leave(c *Client) {
 func (h *Hub) Run(ctx context.Context) {
 	t := time.NewTicker(10 * time.Second)
 	defer t.Stop()
+	// members with fresh sync status go out at most this often
+	m := time.NewTicker(2 * time.Second)
+	defer m.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -133,8 +171,22 @@ func (h *Hub) Run(ctx context.Context) {
 		case <-t.C:
 			h.flush(ctx, true)
 			h.reap(ctx)
+		case <-m.C:
+			for _, r := range h.loaded() {
+				r.flushMembers()
+			}
 		}
 	}
+}
+
+func (h *Hub) loaded() []*Room {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	list := make([]*Room, 0, len(h.rooms))
+	for _, r := range h.rooms {
+		list = append(list, r)
+	}
+	return list
 }
 
 // emptyRoomGrace is how long a room may sit with nobody in it before it is
@@ -162,14 +214,7 @@ func (h *Hub) reap(ctx context.Context) {
 }
 
 func (h *Hub) flush(ctx context.Context, evict bool) {
-	h.mu.Lock()
-	list := make([]*Room, 0, len(h.rooms))
-	for _, r := range h.rooms {
-		list = append(list, r)
-	}
-	h.mu.Unlock()
-
-	for _, r := range list {
+	for _, r := range h.loaded() {
 		if st, dirty := r.persistSnapshot(); dirty {
 			b, _ := json.Marshal(st)
 			if _, err := h.db.Exec(ctx,
@@ -181,6 +226,7 @@ func (h *Hub) flush(ctx context.Context, evict bool) {
 			h.mu.Lock()
 			if r.empty() {
 				delete(h.rooms, r.ID)
+				r.stop()
 				// start the empty-room grace period (see reap)
 				if _, err := h.db.Exec(ctx,
 					`UPDATE rooms SET updated_at=now() WHERE id=$1`, r.ID); err != nil {

@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -16,7 +17,12 @@ type Job struct {
 	Attempts int
 }
 
-func Enqueue(ctx context.Context, db *pgxpool.Pool, typ string, payload any) error {
+// Execer is a pool or a transaction.
+type Execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func Enqueue(ctx context.Context, db Execer, typ string, payload any) error {
 	b, err := json.Marshal(payload)
 	if err != nil {
 		return err

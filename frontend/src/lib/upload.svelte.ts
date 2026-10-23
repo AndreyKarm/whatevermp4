@@ -43,9 +43,25 @@ class S3Uploader {
 	mediaId = $state<string | null>(null);
 	size = $state(0);
 	error = $state<string | null>(null);
+	/** Files waiting for the running upload to finish (e.g. several dropped at once). */
+	queue = $state<{ file: File; folderId: string | null }[]>([]);
 
 	get busy() {
 		return this.progress !== null;
+	}
+
+	/** Uploads the files one after another; returns at once. */
+	enqueue(files: Iterable<File>, folderId: string | null = null) {
+		for (const file of files) this.queue.push({ file, folderId });
+		if (!this.busy) this.#drain();
+	}
+
+	async #drain() {
+		while (this.queue.length && !this.busy) {
+			const next = this.queue.shift()!;
+			// a failure is shown (uploader.error); carry on with the rest
+			await this.upload(next.file, next.folderId).catch(() => {});
+		}
 	}
 
 	async upload(file: File, folderId: string | null = null) {

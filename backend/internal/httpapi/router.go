@@ -51,10 +51,12 @@ func NewRouter(
 	r.Route("/api", func(r chi.Router) {
 		// Media library
 		r.Get("/media", s.listMedia)
+		r.Post("/media/bulk", s.bulkMedia)
 		r.Get("/media/{id}", s.getMedia)
 		r.Patch("/media/{id}", s.updateMedia)
 		r.Delete("/media/{id}", s.deleteMedia)
 		r.Post("/media/{id}/reprocess", s.reprocessMedia)
+		r.Post("/media/{id}/delete-original", s.deleteOriginal)
 		r.Get("/media/{id}/download", s.downloadMedia)
 
 		// Library folders (series, seasons, …)
@@ -82,6 +84,7 @@ func NewRouter(
 		r.Get("/rooms/{id}", s.getRoom)
 		r.Patch("/rooms/{id}", s.updateRoom)
 		r.Delete("/rooms/{id}", s.deleteRoom)
+		r.Post("/rooms/{id}/access", s.roomAccess)
 	})
 
 	return r
@@ -92,7 +95,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 		origin := r.Header.Get("Origin")
 		if origin != "" && slices.Contains(s.cfg.AllowedOrigins, origin) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Range, X-Nickname")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Range, X-Nickname, X-Room-Invite")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
 			// let browsers cache the preflight instead of sending one per request

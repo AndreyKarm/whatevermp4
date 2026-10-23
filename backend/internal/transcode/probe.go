@@ -25,9 +25,11 @@ type ProbeResult struct {
 	} `json:"format"`
 }
 
-func Probe(ctx context.Context, path string) (*ProbeResult, error) {
-	out, err := exec.CommandContext(ctx, "ffprobe", "-v", "error",
-		"-print_format", "json", "-show_streams", "-show_format", path).Output()
+// Probe runs ffprobe on path; inputOpts go before it (e.g. network options).
+func Probe(ctx context.Context, path string, inputOpts ...string) (*ProbeResult, error) {
+	args := append([]string{"-v", "error", "-print_format", "json", "-show_streams", "-show_format"},
+		inputOpts...)
+	out, err := exec.CommandContext(ctx, "ffprobe", append(args, path)...).Output()
 	if err != nil {
 		return nil, err
 	}

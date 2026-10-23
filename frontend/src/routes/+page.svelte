@@ -2,12 +2,16 @@
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
 	import { PUBLIC_API_URL } from '$app/env/public';
-	import { Film, Library, Pause, Play } from '@lucide/svelte';
+	import { Film, Library, Lock, Pause, Play } from '@lucide/svelte';
 	import { apiFetch } from '#lib/api.ts';
 	import { onChange } from '#lib/events.ts';
-	import type { RoomItem } from '#lib/types.ts';
+	import { listProgress } from '#lib/progress.ts';
+	import { formatTime } from '#lib/time.ts';
+	import { startRoom } from '#lib/watch.ts';
+	import type { MediaItem, RoomItem } from '#lib/types.ts';
 
 	let rooms = $state<RoomItem[]>([]);
+	let media = $state<MediaItem[]>([]);
 	let loaded = $state(false);
 	let error = $state<string | null>(null);
 
@@ -15,6 +19,16 @@
 	const sorted = $derived(
 		[...rooms].sort((a, b) => (b.members?.length ?? 0) - (a.members?.length ?? 0))
 	);
+
+	// Continue watching: this viewer's saved positions (localStorage) on ready
+	// media, most recent first. Re-read whenever the media list reloads.
+	const continuing = $derived.by(() => {
+		const byId = new Map(media.map((m) => [m.id, m]));
+		return listProgress()
+			.map((p) => ({ ...p, item: byId.get(p.mediaId) }))
+			.filter((p): p is typeof p & { item: MediaItem } => p.item?.status === 'ready')
+			.slice(0, 12);
+	});
 
 	async function load() {
 		try {
@@ -27,15 +41,72 @@
 		}
 	}
 
+	async function loadMedia() {
+		try {
+			media = await apiFetch<MediaItem[]>('/api/media');
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		}
+	}
+
 	onMount(() => {
 		load();
-		return onChange(['rooms', 'media_files'], load);
+		loadMedia();
+		const offs = [onChange(['rooms', 'media_files'], load), onChange(['media_files'], loadMedia)];
+		return () => offs.forEach((off) => off());
 	});
+
+	async function resume(item: MediaItem) {
+		try {
+			await startRoom(item);
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		}
+	}
 </script>
 
 <svelte:head><title>Rooms · whatevermp4</title></svelte:head>
 
 <main class="container page">
+	{#if continuing.length}
+		<section class="continue">
+			<h2 class="panel-title">Continue watching</h2>
+			<ul class="row">
+				{#each continuing as c (c.mediaId)}
+					<li>
+						<button
+							class="resume"
+							title="Resume from {formatTime(c.t)}"
+							onclick={() => resume(c.item)}
+						>
+							<div class="thumb">
+								{#if c.item.posterKey && c.item.playbackUrl}
+									<img
+										src="{PUBLIC_API_URL}{c.item.playbackUrl}/poster.jpg"
+										alt=""
+										draggable="false"
+									/>
+								{:else}
+									<Film size={28} />
+								{/if}
+								<span class="play btn-round"><Play size={14} fill="currentColor" /></span>
+								{#if c.item.durationSec}
+									<div class="bar">
+										<div style:width="{Math.min(c.t / c.item.durationSec, 1) * 100}%"></div>
+									</div>
+								{/if}
+							</div>
+							<span class="title">{c.item.filename}</span>
+							<span class="meta">
+								{formatTime(c.t)}{c.item.durationSec ? ` / ${formatTime(c.item.durationSec)}` : ''}
+							</span>
+						</button>
+					</li>
+				{/each}
+			</ul>
+		</section>
+	{/if}
+
 	<div class="page-head">
 		<div>
 			<h1 class="section-title">Rooms</h1>
@@ -60,6 +131,11 @@
 							{/if}
 							{#if members.length}
 								<span class="badge live">● {members.length} watching</span>
+							{/if}
+							{#if r.private}
+								<span class="badge private" title="Private: only you see it here"
+									><Lock size={10} /></span
+								>
 							{/if}
 						</div>
 						<div class="body">
@@ -99,6 +175,79 @@
 </main>
 
 <style>
+	.continue {
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+		margin-bottom: 2.5rem;
+	}
+
+	.continue .row {
+		display: grid;
+		grid-auto-columns: minmax(12rem, 14rem);
+		grid-auto-flow: column;
+		gap: 1.25rem;
+		overflow-x: auto;
+		padding: 0.25rem 0.25rem 0.75rem;
+		scrollbar-width: thin;
+	}
+
+	.resume {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		width: 100%;
+		text-align: left;
+	}
+
+	.resume .thumb {
+		border-radius: 0.3rem;
+		transition: box-shadow 0.3s ease;
+	}
+
+	.resume:hover .thumb,
+	.resume:focus-visible .thumb {
+		box-shadow: var(--ring);
+	}
+
+	.play {
+		position: absolute;
+		opacity: 0;
+		transition: opacity 0.2s ease;
+	}
+
+	.resume:hover .play,
+	.resume:focus-visible .play {
+		opacity: 1;
+	}
+
+	.bar {
+		position: absolute;
+		right: 0;
+		bottom: 0;
+		left: 0;
+		height: 4px;
+		background-color: rgb(0 0 0 / 0.5);
+	}
+
+	.bar > div {
+		height: 100%;
+		background-color: var(--color-primary);
+	}
+
+	.title {
+		display: -webkit-box;
+		overflow: hidden;
+		font-size: 12px;
+		font-weight: 700;
+		line-height: 1.4;
+		text-transform: uppercase;
+		overflow-wrap: anywhere;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+		-webkit-box-orient: vertical;
+	}
+
 	.rooms {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
@@ -142,6 +291,14 @@
 		position: absolute;
 		top: 0.75rem;
 		left: 0.75rem;
+	}
+
+	.private {
+		position: absolute;
+		top: 0.75rem;
+		right: 0.75rem;
+		display: flex;
+		padding: 0.25rem;
 	}
 
 	.body {

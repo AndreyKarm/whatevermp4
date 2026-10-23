@@ -2,6 +2,7 @@ package rooms
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -12,6 +13,11 @@ import (
 )
 
 const maxNickname = 32
+
+// StatusInviteRequired closes the socket of someone joining a private room
+// without (or with a stale) invite code. Unlike 1008 (room gone) the
+// frontend asks for the password and tries again.
+const StatusInviteRequired websocket.StatusCode = 4003
 
 // CleanNickname trims and length-limits a self-chosen nickname.
 func CleanNickname(s string) string {
@@ -52,7 +58,12 @@ func Handler(h *Hub, origins []string) http.HandlerFunc {
 
 		c := &Client{Nickname: name, conn: conn, send: make(chan []byte, 64)}
 		go c.writeLoop(ctx)
-		if err := h.Join(ctx, chi.URLParam(r, "id"), c); err != nil {
+		err = h.Join(ctx, chi.URLParam(r, "id"), r.URL.Query().Get("invite"), c)
+		if errors.Is(err, ErrInviteRequired) {
+			conn.Close(StatusInviteRequired, "invite required")
+			return
+		}
+		if err != nil {
 			conn.Close(websocket.StatusPolicyViolation, "room not found")
 			return
 		}

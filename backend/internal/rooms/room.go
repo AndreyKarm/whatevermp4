@@ -1,32 +1,63 @@
 package rooms
 
 import (
+	"cmp"
+	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
+	"math"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 )
 
+// Access says who may join and control a room. The hub keeps it in sync
+// with the rooms row (owner_name, everyone_controls, controllers, private,
+// invite_code).
+type Access struct {
+	Owner       string
+	Everyone    bool
+	Controllers []string // nicknames the owner allowed to control playback
+	Private     bool
+	InviteCode  string // required to join a private room
+}
+
+// ErrInviteRequired: a private room was joined without its invite code.
+var ErrInviteRequired = errors.New("invite required")
+
+// mediaLookup returns the duration in seconds (0 if unknown) of each ID
+// that is ready media; others are left out.
+type mediaLookup func(ctx context.Context, ids []string) (map[string]float64, error)
+
+const maxQueue = 200
+
 type Room struct {
-	ID       string
-	Owner    string // owner's nickname
-	everyone bool
+	ID string
 
-	mu      sync.Mutex
-	state   State
-	holding bool
-	dirty   bool
-	clients map[*Client]struct{}
+	mu           sync.Mutex
+	access       Access
+	state        State
+	holding      bool
+	dirty        bool
+	membersDirty bool // a status arrived; members go out on the hub's next tick
+	clients      map[*Client]struct{}
+	durations    map[string]float64 // media ID → seconds, for the end timer
+	endTimer     *time.Timer
+	closed       bool
 
-	onChange func() // playback state changed (play/pause/media/rate)
+	onChange func() // playback state changed (play/pause/media/rate/queue)
+	lookup   mediaLookup
 }
 
-func newRoom(id, owner string, everyone bool) *Room {
-	return &Room{ID: id, Owner: owner, everyone: everyone,
-		state: State{Rate: 1}, clients: map[*Client]struct{}{}}
+func newRoom(id string, a Access) *Room {
+	return &Room{ID: id, access: a, state: State{Rate: 1},
+		clients: map[*Client]struct{}{}, durations: map[string]float64{}}
 }
 
-func nowMs() int64 { return time.Now().UnixMilli() }
+// nowMs is the server clock; a variable so tests can move it.
+var nowMs = func() int64 { return time.Now().UnixMilli() }
 
 func (r *Room) posLocked(now int64) float64 {
 	if !r.state.Playing {
@@ -42,22 +73,30 @@ func (r *Room) snapshotLocked() {
 	r.state.UpdatedAt = now
 }
 
-func (r *Room) canControl(c *Client) bool {
-	return r.everyone || c.Nickname == r.Owner
+func (r *Room) canControlLocked(c *Client) bool {
+	a := r.access
+	return a.Everyone || c.Nickname == a.Owner || slices.Contains(a.Controllers, c.Nickname)
 }
 
 func (r *Room) membersLocked() []Member {
 	ms := make([]Member, 0, len(r.clients))
 	for c := range r.clients {
-		ms = append(ms, Member{Name: c.Nickname, Buffering: c.buffering})
+		m := Member{Name: c.Nickname, Buffering: c.buffering}
+		if c.hasStatus {
+			drift, ahead := c.drift, c.ahead
+			m.Drift, m.Ahead = &drift, &ahead
+		}
+		ms = append(ms, m)
 	}
+	// a stable order, so the list doesn't reshuffle on every update
+	slices.SortFunc(ms, func(a, b Member) int { return cmp.Compare(a.Name, b.Name) })
 	return ms
 }
 
 func (r *Room) stateMsgLocked() Out {
 	st := r.state
 	return Out{Type: "state", State: &st, Holding: r.holding, Server: nowMs(),
-		Owner: r.Owner, Everyone: r.everyone}
+		Owner: r.access.Owner, Everyone: r.access.Everyone, Controllers: r.access.Controllers}
 }
 
 func (r *Room) broadcastLocked(o Out) {
@@ -65,6 +104,17 @@ func (r *Room) broadcastLocked(o Out) {
 	for c := range r.clients {
 		c.trySend(b)
 	}
+}
+
+// broadcastStateLocked sends the state to everyone and re-arms the end timer.
+func (r *Room) broadcastStateLocked() {
+	r.broadcastLocked(r.stateMsgLocked())
+	r.scheduleEndLocked()
+}
+
+func (r *Room) broadcastMembersLocked() {
+	r.membersDirty = false
+	r.broadcastLocked(Out{Type: "members", Members: r.membersLocked()})
 }
 
 // applyBufferLocked implements "wait for everyone". Returns true if state changed.
@@ -89,13 +139,21 @@ func (r *Room) applyBufferLocked() bool {
 	return false
 }
 
-func (r *Room) join(c *Client) {
+func (r *Room) join(c *Client, invite string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.access.Private && !validInvite(r.access.InviteCode, invite) {
+		return ErrInviteRequired
+	}
 	c.room = r
 	r.clients[c] = struct{}{}
 	c.sendOut(r.stateMsgLocked())
-	r.broadcastLocked(Out{Type: "members", Members: r.membersLocked()})
+	r.broadcastMembersLocked()
+	return nil
+}
+
+func validInvite(code, given string) bool {
+	return code != "" && subtle.ConstantTimeCompare([]byte(code), []byte(given)) == 1
 }
 
 func (r *Room) leave(c *Client) {
@@ -103,12 +161,50 @@ func (r *Room) leave(c *Client) {
 	defer r.mu.Unlock()
 	delete(r.clients, c)
 	if r.applyBufferLocked() {
-		r.broadcastLocked(r.stateMsgLocked())
+		r.broadcastStateLocked()
 	}
-	r.broadcastLocked(Out{Type: "members", Members: r.membersLocked()})
+	r.broadcastMembersLocked()
 }
 
-func (r *Room) handle(c *Client, in In) {
+// receive looks up the media a message names (outside the lock, it hits
+// the database), then handles it.
+func (r *Room) receive(ctx context.Context, c *Client, in In) {
+	var ids []string
+	switch in.Type {
+	case "change_media":
+		if in.MediaID != "" {
+			ids = []string{in.MediaID}
+		}
+	case "queue":
+		ids = in.Queue
+		if len(ids) > maxQueue {
+			ids = ids[:maxQueue]
+		}
+	}
+	var known map[string]float64
+	if len(ids) > 0 {
+		if r.lookup == nil {
+			known = make(map[string]float64, len(ids))
+			for _, id := range ids {
+				known[id] = 0
+			}
+		} else {
+			lctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			var err error
+			known, err = r.lookup(lctx, ids)
+			cancel()
+			if err != nil {
+				c.sendOut(Out{Type: "error", Text: "couldn't look up that media"})
+				return
+			}
+		}
+	}
+	r.handle(c, in, known)
+}
+
+// handle applies a client message; known holds the ready media (with
+// durations) among the IDs it names.
+func (r *Room) handle(c *Client, in In, known map[string]float64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -116,9 +212,17 @@ func (r *Room) handle(c *Client, in In) {
 	case "buffering":
 		c.buffering = in.Buffering
 		if r.applyBufferLocked() {
-			r.broadcastLocked(r.stateMsgLocked())
+			r.broadcastStateLocked()
 		}
-		r.broadcastLocked(Out{Type: "members", Members: r.membersLocked()})
+		r.broadcastMembersLocked()
+		return
+	case "status":
+		if finite(in.Drift) && finite(in.Ahead) {
+			c.hasStatus = true
+			c.drift = math.Max(-1e5, math.Min(in.Drift, 1e5))
+			c.ahead = math.Max(0, math.Min(in.Ahead, 1e5))
+			r.membersDirty = true
+		}
 		return
 	case "chat":
 		t := strings.TrimSpace(in.Text)
@@ -133,9 +237,12 @@ func (r *Room) handle(c *Client, in In) {
 		return
 	}
 
-	if !r.canControl(c) {
+	if !r.canControlLocked(c) {
 		c.sendOut(Out{Type: "error", Text: "only the host can control playback"})
 		return
+	}
+	for id, d := range known {
+		r.durations[id] = d
 	}
 	pos := in.Position
 	if pos < 0 {
@@ -156,20 +263,129 @@ func (r *Room) handle(c *Client, in In) {
 		r.snapshotLocked()
 		r.state.Rate = in.Rate
 	case "change_media":
-		if in.MediaID == "" {
+		if _, ok := known[in.MediaID]; !ok {
+			c.sendOut(Out{Type: "error", Text: "that movie isn't ready"})
 			return
 		}
 		// position: where the controller last watched this media (their localStorage)
-		r.state = State{MediaID: in.MediaID, Position: pos, Rate: 1, UpdatedAt: nowMs()}
+		r.state = State{MediaID: in.MediaID, Position: pos, Rate: 1, UpdatedAt: nowMs(),
+			Queue: slices.DeleteFunc(slices.Clone(r.state.Queue),
+				func(id string) bool { return id == in.MediaID })}
+	case "queue":
+		q := make([]string, 0, len(in.Queue))
+		for _, id := range in.Queue {
+			if _, ok := known[id]; ok && len(q) < maxQueue && !slices.Contains(q, id) {
+				q = append(q, id)
+			}
+		}
+		// playback is untouched (and so is a buffering hold)
+		r.state.Queue = q
+		r.dirty = true
+		r.broadcastStateLocked()
+		r.changed()
+		return
+	case "next":
+		if len(r.state.Queue) == 0 {
+			return
+		}
+		r.advanceLocked()
 	default:
 		return
 	}
 	r.holding = false
 	r.applyBufferLocked()
 	r.dirty = true
-	r.broadcastLocked(r.stateMsgLocked())
+	r.broadcastStateLocked()
+	r.changed()
+}
+
+func (r *Room) changed() {
 	if r.onChange != nil {
 		r.onChange()
+	}
+}
+
+func finite(f float64) bool { return !math.IsNaN(f) && !math.IsInf(f, 0) }
+
+// advanceLocked starts the first queued media from the beginning.
+func (r *Room) advanceLocked() {
+	next, rest := r.state.Queue[0], slices.Clone(r.state.Queue[1:])
+	r.state = State{MediaID: next, Playing: true, Rate: 1, UpdatedAt: nowMs(), Queue: rest}
+}
+
+// scheduleEndLocked arms a timer for when the playing media reaches its
+// end, so the room moves on to the queue (or stops) without any client.
+func (r *Room) scheduleEndLocked() {
+	if r.endTimer != nil {
+		r.endTimer.Stop()
+		r.endTimer = nil
+	}
+	if r.closed || !r.state.Playing || r.state.Rate <= 0 {
+		return
+	}
+	d := r.durations[r.state.MediaID]
+	if d <= 0 {
+		return
+	}
+	left := (d - r.posLocked(nowMs())) / r.state.Rate
+	media := r.state.MediaID
+	r.endTimer = time.AfterFunc(time.Duration(max(left, 0)*float64(time.Second)),
+		func() { r.ended(media) })
+}
+
+// ended runs when media should have reached its end: play the next queued
+// media, or pause at the end.
+func (r *Room) ended(media string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || !r.state.Playing || r.state.MediaID != media {
+		return
+	}
+	d := r.durations[media]
+	if d <= 0 {
+		return
+	}
+	now := nowMs()
+	if r.posLocked(now) < d-0.5 {
+		r.scheduleEndLocked() // rescheduled since (e.g. a seek back); not there yet
+		return
+	}
+	if len(r.state.Queue) > 0 {
+		r.advanceLocked()
+	} else {
+		r.state.Position, r.state.UpdatedAt, r.state.Playing = d, now, false
+	}
+	r.holding = false
+	r.applyBufferLocked()
+	r.dirty = true
+	r.broadcastStateLocked()
+	r.changed()
+}
+
+func (r *Room) setAccess(a Access) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.access = a
+	r.broadcastStateLocked()
+}
+
+// flushMembers sends members if a status changed since the last send.
+func (r *Room) flushMembers() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.membersDirty {
+		r.broadcastMembersLocked()
+	}
+}
+
+// stop disarms the room once the hub drops it.
+func (r *Room) stop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed = true
+	if r.endTimer != nil {
+		r.endTimer.Stop()
+		r.endTimer = nil
 	}
 }
 
@@ -182,6 +398,7 @@ func (r *Room) persistSnapshot() (State, bool) {
 	}
 	r.dirty = false
 	st := r.state
+	st.Queue = slices.Clone(st.Queue) // marshalled after the lock is released
 	st.Position = r.posLocked(nowMs())
 	st.UpdatedAt = nowMs()
 	return st, true

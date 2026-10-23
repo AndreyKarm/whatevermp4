@@ -45,6 +45,18 @@ export interface RoomState {
 	position: number;
 	updatedAt: number;
 	rate: number;
+	queue?: string[];
+}
+
+// Timeline preview sprites (internal/transcode/thumbs.go): thumbs/sprite_NNN.jpg
+// sheets of cols×rows tiles, one tile every `interval` seconds.
+export interface Thumbnails {
+	interval: number;
+	width: number;
+	height: number;
+	cols: number;
+	rows: number;
+	count: number;
 }
 
 // ============================================================================
@@ -95,6 +107,13 @@ export const mediaFiles = pgTable('media_files', {
 	audioTracks: jsonb('audio_tracks').$type<AudioTrack[]>().notNull().default([]),
 	subtitleTracks: jsonb('subtitle_tracks').$type<SubTrack[]>().notNull().default([]),
 	fonts: jsonb('fonts').$type<string[]>().notNull().default([]),
+	thumbnails: jsonb('thumbnails').$type<Thumbnails>(),
+	// 0..1 while an import or transcode runs, null otherwise (or when unknown)
+	progress: doublePrecision('progress'),
+	rawBytes: bigint('raw_bytes', { mode: 'number' }),
+	hlsBytes: bigint('hls_bytes', { mode: 'number' }),
+	// the original was deleted to save space: no download or re-process
+	rawDeleted: boolean('raw_deleted').notNull().default(false),
 	error: text('error'),
 	createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 });
@@ -104,6 +123,12 @@ export const rooms = pgTable('rooms', {
 	name: text('name').notNull().default('Watch Party'),
 	ownerName: text('owner_name').notNull(), // nickname
 	everyoneControls: boolean('everyone_controls').notNull().default(false),
+	// nicknames the owner allowed to control playback
+	controllers: jsonb('controllers').$type<string[]>().notNull().default([]),
+	// private rooms aren't listed; joining needs the invite code (or the password, which returns it)
+	private: boolean('private').notNull().default(false),
+	passwordHash: text('password_hash'),
+	inviteCode: text('invite_code'),
 	state: jsonb('state').$type<RoomState>().notNull().default({
 		mediaId: '',
 		playing: false,

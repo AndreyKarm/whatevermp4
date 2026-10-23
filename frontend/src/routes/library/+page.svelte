@@ -1,27 +1,36 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { browser } from '$app/env';
 	import { PUBLIC_API_URL } from '$app/env/public';
 	import {
+		Check,
+		CheckSquare,
 		ChevronRight,
 		Download,
 		Film,
 		Folder as FolderIcon,
 		FolderPlus,
+		HardDrive,
 		Pencil,
 		Play,
-		Plus
+		Plus,
+		Search,
+		Upload,
+		X
 	} from '@lucide/svelte';
 	import { apiFetch, apiPost } from '#lib/api.ts';
 	import { onChange } from '#lib/events.ts';
-	import { byNumericName, folderPath, subtree } from '#lib/folders.ts';
-	import { getProgress } from '#lib/progress.ts';
+	import { byEpisode, byFilename } from '#lib/episodes.ts';
+	import { byNumericName, folderOptions, folderPath, pathLabel, subtree } from '#lib/folders.ts';
+	import { getProgress, isWatched } from '#lib/progress.ts';
 	import { formatTime } from '#lib/time.ts';
 	import { uploader } from '#lib/upload.svelte.ts';
-	import type { Folder, MediaItem, TorrentItem } from '#lib/types.ts';
+	import { startRoom } from '#lib/watch.ts';
+	import type { Folder, MediaItem, MediaStatus, TorrentItem } from '#lib/types.ts';
 	import UploadModal from '#lib/components/UploadModal.svelte';
 	import MediaEditModal from '#lib/components/MediaEditModal.svelte';
 	import FolderModal from '#lib/components/FolderModal.svelte';
@@ -69,23 +78,74 @@
 		}
 	});
 
-	const byName = (a: MediaItem, b: MediaItem) =>
-		a.filename.localeCompare(b.filename, undefined, { numeric: true, sensitivity: 'base' });
+	// ---------- search and filters ----------
 
-	const subfolders = $derived(
-		folders.filter((f) => (f.parentId ?? null) === currentId).sort(byNumericName)
+	type Scope = 'folder' | 'subfolders' | 'all';
+	type WatchFilter = 'all' | 'unwatched' | 'progress' | 'watched';
+	let query = $state('');
+	let statusFilter = $state<'all' | MediaStatus>('all');
+	let watchFilter = $state<WatchFilter>('all');
+	let scope = $state<Scope>('folder');
+	const needle = $derived(query.trim().toLowerCase());
+	const filtering = $derived(
+		!!needle || statusFilter !== 'all' || watchFilter !== 'all' || scope !== 'folder'
 	);
 
-	const items = $derived.by(() => {
-		const list = media.filter((m) => (m.folderId ?? null) === currentId);
-		if (sort === 'name') return list.sort(byName);
-		if (sort === 'episode') {
-			// Items with season/episode first, in order; the rest by name.
-			const key = (m: MediaItem) => (m.season ?? Infinity) * 10_000 + (m.episode ?? 0);
-			return list.sort((a, b) => key(a) - key(b) || byName(a, b));
+	// This viewer's saved positions and watched marks (localStorage), re-read whenever the list reloads.
+	const positions = $derived(
+		browser ? new Map(media.map((m) => [m.id, getProgress(m.id)])) : new Map<string, null>()
+	);
+	const watchedIds = $derived(
+		browser ? new Set(media.filter((m) => isWatched(m.id)).map((m) => m.id)) : new Set<string>()
+	);
+
+	function watchState(m: MediaItem): WatchFilter {
+		if (positions.get(m.id)) return 'progress';
+		return watchedIds.has(m.id) ? 'watched' : 'unwatched';
+	}
+
+	// Folders the scope covers (null = top level); undefined = everywhere.
+	const scopeFolders = $derived.by((): Set<string | null> | undefined => {
+		if (scope === 'folder') return new Set([currentId]);
+		// "with subfolders" at the top level is the whole library
+		if (scope === 'all' || !currentId) return undefined;
+		return subtree(folders, currentId);
+	});
+
+	const subfolders = $derived.by(() => {
+		if (!filtering) {
+			return folders.filter((f) => (f.parentId ?? null) === currentId).sort(byNumericName);
 		}
+		// while searching, folders whose name matches (within the scope)
+		if (!needle) return [];
+		return folders
+			.filter(
+				(f) =>
+					f.name.toLowerCase().includes(needle) &&
+					(!scopeFolders || scopeFolders.has(f.parentId ?? null))
+			)
+			.sort(byNumericName);
+	});
+
+	const items = $derived.by(() => {
+		const list = media.filter((m) => {
+			if (scopeFolders && !scopeFolders.has(m.folderId ?? null)) return false;
+			if (needle && !m.filename.toLowerCase().includes(needle)) return false;
+			if (statusFilter !== 'all' && m.status !== statusFilter) return false;
+			if (watchFilter !== 'all' && watchState(m) !== watchFilter) return false;
+			return true;
+		});
+		if (sort === 'name') return list.sort(byFilename);
+		if (sort === 'episode') return list.sort(byEpisode);
 		return list; // API order: newest first
 	});
+
+	function clearFilters() {
+		query = '';
+		statusFilter = 'all';
+		watchFilter = 'all';
+		scope = 'folder';
+	}
 
 	// Per folder card: videos anywhere inside it, direct subfolders, and a poster to show.
 	const folderInfo = $derived(
@@ -106,10 +166,7 @@
 		)
 	);
 
-	// This viewer's saved positions (localStorage), re-read whenever the list reloads.
-	const progress = $derived(
-		browser ? new Map(media.map((m) => [m.id, getProgress(m.id)])) : new Map<string, null>()
-	);
+	// ---------- loading ----------
 
 	async function loadMedia() {
 		try {
@@ -154,33 +211,211 @@
 		return id ? resolve(`/library?folder=${id}`) : resolve('/library');
 	}
 
+	function errorText(e: unknown) {
+		return e instanceof Error ? e.message : String(e);
+	}
+
 	async function watch(item: MediaItem) {
 		try {
-			const { id } = await apiPost<{ id: string }>('/api/rooms', {
-				name: item.filename,
-				mediaId: item.id,
-				// the room starts where this host last stopped
-				position: getProgress(item.id) ?? 0
-			});
-			goto(resolve('/rooms/[id]', { id }));
+			await startRoom(item);
 		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
+			error = errorText(e);
 		}
+	}
+
+	// ---------- selection and bulk actions ----------
+
+	let selecting = $state(false);
+	const selected = new SvelteSet<string>();
+	let bulkBusy = $state(false);
+	let bulkTarget = $state('');
+	const moveChoices = $derived(folderOptions(folders));
+
+	function toggleSelecting() {
+		selecting = !selecting;
+		if (!selecting) selected.clear();
+	}
+
+	function toggleSelected(id: string) {
+		if (selected.has(id)) selected.delete(id);
+		else selected.add(id);
+	}
+
+	function selectAllVisible() {
+		const all = items.every((m) => selected.has(m.id));
+		for (const m of items) {
+			if (all) selected.delete(m.id);
+			else selected.add(m.id);
+		}
+	}
+
+	type BulkAction = 'move' | 'delete' | 'reprocess' | 'delete_original';
+
+	async function bulk(action: BulkAction, ids = [...selected], folderId: string | null = null) {
+		if (!ids.length) return;
+		const n = ids.length === 1 ? 'this movie' : `${ids.length} movies`;
+		if (action === 'delete' && !confirm(`Delete ${n} for everyone? This can't be undone.`)) return;
+		if (
+			action === 'delete_original' &&
+			!confirm(
+				`Delete the original files of ${n}? They keep playing but can't be downloaded or re-processed.`
+			)
+		)
+			return;
+		bulkBusy = true;
+		try {
+			const { skipped } = await apiPost<{ done: number; skipped: number }>('/api/media/bulk', {
+				ids,
+				action,
+				folderId
+			});
+			error = skipped
+				? `${skipped} of ${ids.length} skipped (not ready, still being prepared, or no original).`
+				: null;
+			if (action === 'delete') for (const id of ids) selected.delete(id);
+		} catch (e) {
+			error = errorText(e);
+		} finally {
+			bulkBusy = false;
+		}
+	}
+
+	function moveSelected() {
+		if (!bulkTarget) return;
+		bulk('move', [...selected], bulkTarget === 'top' ? null : bulkTarget);
+		bulkTarget = '';
+	}
+
+	// ---------- drag and drop ----------
+
+	// Cards dragged within the page carry their IDs under these types.
+	const MEDIA_TYPE = 'application/x-whatever-media';
+	const FOLDER_TYPE = 'application/x-whatever-folder';
+
+	// Files dragged in from the desktop: the drop overlay.
+	let fileDrag = $state(false);
+	let dragDepth = 0;
+	// The folder card or breadcrumb a card is dragged over ('' = top level).
+	let dropTarget = $state<string | null>(null);
+
+	const hasFiles = (e: DragEvent) => !!e.dataTransfer?.types.includes('Files');
+	const hasCards = (e: DragEvent) =>
+		!!e.dataTransfer?.types.some((t) => t === MEDIA_TYPE || t === FOLDER_TYPE);
+
+	function onWindowDragEnter(e: DragEvent) {
+		if (!hasFiles(e)) return;
+		dragDepth++;
+		fileDrag = true;
+	}
+
+	function onWindowDragLeave(e: DragEvent) {
+		if (!hasFiles(e)) return;
+		dragDepth = Math.max(dragDepth - 1, 0);
+		if (dragDepth === 0) fileDrag = false;
+	}
+
+	function onWindowDragOver(e: DragEvent) {
+		// without this the browser opens the dropped file instead
+		if (hasFiles(e)) e.preventDefault();
+	}
+
+	function onWindowDrop(e: DragEvent) {
+		if (!hasFiles(e)) return;
+		e.preventDefault();
+		dragDepth = 0;
+		fileDrag = false;
+		const files = [...(e.dataTransfer?.files ?? [])].filter(
+			(f) => f.type.startsWith('video/') || /\.(mkv|mp4|m4v|mov|avi|webm|ts)$/i.test(f.name)
+		);
+		if (!files.length) {
+			error = 'Drop video files to upload them.';
+			return;
+		}
+		uploader.enqueue(files, current?.id ?? null);
+	}
+
+	function dragMedia(e: DragEvent, item: MediaItem) {
+		// dragging a selected card moves the whole selection
+		const ids = selected.has(item.id) ? [...selected] : [item.id];
+		e.dataTransfer?.setData(MEDIA_TYPE, JSON.stringify(ids));
+		if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+	}
+
+	function dragFolder(e: DragEvent, f: Folder) {
+		e.dataTransfer?.setData(FOLDER_TYPE, f.id);
+		if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+	}
+
+	function overTarget(e: DragEvent, id: string | null) {
+		if (!hasCards(e)) return;
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+		dropTarget = id ?? '';
+	}
+
+	function leaveTarget(id: string | null) {
+		if (dropTarget === (id ?? '')) dropTarget = null;
+	}
+
+	async function dropOn(e: DragEvent, folderId: string | null) {
+		if (!hasCards(e)) return;
+		e.preventDefault();
+		dropTarget = null;
+		const mediaIds = e.dataTransfer?.getData(MEDIA_TYPE);
+		const folder = e.dataTransfer?.getData(FOLDER_TYPE);
+		if (mediaIds) {
+			await bulk('move', JSON.parse(mediaIds) as string[], folderId);
+		} else if (folder && folder !== folderId) {
+			try {
+				await apiFetch(`/api/folders/${folder}`, {
+					method: 'PATCH',
+					body: JSON.stringify({ parentId: folderId })
+				});
+			} catch (err) {
+				error = errorText(err);
+			}
+		}
+	}
+
+	function statusText(item: MediaItem, uploading: boolean) {
+		if (uploading) return `uploading ${Math.round((uploader.progress ?? 0) * 100)}%`;
+		if (item.progress != null && (item.status === 'processing' || item.status === 'downloading'))
+			return `${item.status} ${Math.round(item.progress * 100)}%`;
+		return item.status;
 	}
 </script>
 
 <svelte:head><title>{current ? `${current.name} · ` : ''}Library · whatevermp4</title></svelte:head>
 
-<main class="container page">
+<svelte:window
+	ondragenter={onWindowDragEnter}
+	ondragleave={onWindowDragLeave}
+	ondragover={onWindowDragOver}
+	ondrop={onWindowDrop}
+/>
+
+<main class="container page" class:with-bar={selecting && selected.size > 0}>
 	<div class="page-head">
 		<div class="title">
 			<h1 class="section-title">{current?.name ?? 'Library'}</h1>
 			{#if crumbs.length}
 				<nav class="crumbs" aria-label="Folder path">
-					<a href={folderHref(null)}>Library</a>
+					<a
+						href={folderHref(null)}
+						class:drop-target={dropTarget === ''}
+						ondragover={(e) => overTarget(e, null)}
+						ondragleave={() => leaveTarget(null)}
+						ondrop={(e) => dropOn(e, null)}>Library</a
+					>
 					{#each crumbs.slice(0, -1) as c (c.id)}
 						<ChevronRight size={14} />
-						<a href={folderHref(c.id)}>{c.name}</a>
+						<a
+							href={folderHref(c.id)}
+							class:drop-target={dropTarget === c.id}
+							ondragover={(e) => overTarget(e, c.id)}
+							ondragleave={() => leaveTarget(c.id)}
+							ondrop={(e) => dropOn(e, c.id)}>{c.name}</a
+						>
 					{/each}
 					<ChevronRight size={14} />
 					<span>{current?.name}</span>
@@ -202,18 +437,61 @@
 			<button class="btn btn-outline" onclick={() => (folderModal = { folder: null })}>
 				<FolderPlus size={16} /> New folder
 			</button>
-			<label class="sort">
-				<span class="label">Sort</span>
-				<select class="input" bind:value={sort}>
-					<option value="newest">Newest</option>
-					<option value="name">Name</option>
-					<option value="episode">Season / episode</option>
-				</select>
-			</label>
+			<a href={resolve('/library/storage')} class="btn btn-outline" title="Space used">
+				<HardDrive size={16} /> Storage
+			</a>
+			<button
+				class="btn btn-outline"
+				class:active={selecting}
+				aria-pressed={selecting}
+				onclick={toggleSelecting}
+			>
+				<CheckSquare size={16} /> Select
+			</button>
 			<button class="btn btn-primary" onclick={() => (uploadOpen = true)}>
 				<Plus size={16} /> Add movie
 			</button>
 		</div>
+	</div>
+
+	<div class="filters">
+		<label class="search">
+			<Search size={16} />
+			<input
+				class="input"
+				type="search"
+				placeholder="Search by name…"
+				aria-label="Search by name"
+				bind:value={query}
+			/>
+		</label>
+		<select class="input" aria-label="Where to search" bind:value={scope}>
+			<option value="folder">This folder</option>
+			<option value="subfolders">With subfolders</option>
+			<option value="all">Whole library</option>
+		</select>
+		<select class="input" aria-label="Status" bind:value={statusFilter}>
+			<option value="all">Any status</option>
+			<option value="ready">Ready</option>
+			<option value="processing">Processing</option>
+			<option value="downloading">Downloading</option>
+			<option value="uploading">Uploading</option>
+			<option value="failed">Failed</option>
+		</select>
+		<select class="input" aria-label="Watched" bind:value={watchFilter}>
+			<option value="all">Watched or not</option>
+			<option value="unwatched">Not watched yet</option>
+			<option value="progress">In progress</option>
+			<option value="watched">Watched</option>
+		</select>
+		<select class="input" aria-label="Sort" bind:value={sort}>
+			<option value="newest">Newest</option>
+			<option value="name">Name</option>
+			<option value="episode">Season / episode</option>
+		</select>
+		{#if filtering}
+			<button class="btn-icon" title="Clear filters" onclick={clearFilters}><X size={16} /></button>
+		{/if}
 	</div>
 
 	{#if error}<p class="error-text">{error}</p>{/if}
@@ -230,14 +508,24 @@
 		<ul class="grid">
 			{#each subfolders as f (f.id)}
 				{@const info = folderInfo.get(f.id)}
-				<li class="card">
-					<a href={folderHref(f.id)} class="thumb folder-thumb">
+				<li
+					class="card"
+					class:drop-target={dropTarget === f.id}
+					draggable="true"
+					ondragstart={(e) => dragFolder(e, f)}
+					ondragover={(e) => overTarget(e, f.id)}
+					ondragleave={() => leaveTarget(f.id)}
+					ondrop={(e) => dropOn(e, f.id)}
+				>
+					<a href={folderHref(f.id)} class="thumb folder-thumb" draggable="false">
 						{#if info?.poster}<img src={info.poster} alt="" draggable="false" />{/if}
 						<span class="folder-icon"><FolderIcon size={36} /></span>
 					</a>
-					<h3><a href={folderHref(f.id)} title={f.name}>{f.name}</a></h3>
+					<h3><a href={folderHref(f.id)} title={f.name} draggable="false">{f.name}</a></h3>
 					<div class="foot">
 						<div class="meta info">
+							{#if filtering && f.parentId}<span class="path">{pathLabel(folders, f.parentId)}</span
+								>{/if}
 							{#if info?.folders}
 								<span>{info.folders} folder{info.folders === 1 ? '' : 's'}</span>
 							{/if}
@@ -255,9 +543,17 @@
 			{/each}
 
 			{#each items as item (item.id)}
-				{@const watched = progress.get(item.id)}
+				{@const watchedAt = positions.get(item.id)}
 				{@const uploading = uploader.busy && uploader.mediaId === item.id}
-				<li class="card">
+				{@const working =
+					!uploading && (item.status === 'processing' || item.status === 'downloading')}
+				{@const isSelected = selected.has(item.id)}
+				<li
+					class="card"
+					class:selected={isSelected}
+					draggable="true"
+					ondragstart={(e) => dragMedia(e, item)}
+				>
 					<div class="thumb">
 						{#if item.status === 'ready' && item.posterKey && item.playbackUrl}
 							<img src="{PUBLIC_API_URL}{item.playbackUrl}/poster.jpg" alt="" draggable="false" />
@@ -267,28 +563,55 @@
 						{#if item.season != null}
 							<span class="badge se">S{item.season}E{item.episode ?? '?'}</span>
 						{/if}
+						{#if watchedIds.has(item.id) && !watchedAt}
+							<span class="badge seen" title="Watched"><Check size={10} /></span>
+						{/if}
+						{#if selecting}
+							<button
+								class="pick"
+								class:on={isSelected}
+								aria-label="Select {item.filename}"
+								aria-pressed={isSelected}
+								onclick={() => toggleSelected(item.id)}
+							>
+								{#if isSelected}<Check size={14} />{/if}
+							</button>
+						{/if}
 						{#if uploading}
-							<div class="uploading">
+							<div class="overlay">
 								<span>{Math.round((uploader.progress ?? 0) * 100)}%</span>
 								<div class="progress">
 									<div style:width="{(uploader.progress ?? 0) * 100}%"></div>
 								</div>
 							</div>
-						{:else if watched && item.durationSec}
-							<div class="watched" title="Stopped at {formatTime(watched)}">
-								<div style:width="{(watched / item.durationSec) * 100}%"></div>
+						{:else if working}
+							<div class="overlay">
+								{#if item.progress != null}
+									<span>{Math.round(item.progress * 100)}%</span>
+									<div class="progress"><div style:width="{item.progress * 100}%"></div></div>
+								{:else}
+									<span>{item.status}…</span>
+									<div class="progress indeterminate"><div></div></div>
+								{/if}
+							</div>
+						{:else if watchedAt && item.durationSec}
+							<div class="watched" title="Stopped at {formatTime(watchedAt)}">
+								<div style:width="{(watchedAt / item.durationSec) * 100}%"></div>
 							</div>
 						{/if}
 					</div>
 					<h3 title={item.filename}>{item.filename}</h3>
 					<div class="foot">
 						<div class="meta info">
-							<span class="status-{item.status}">
-								{item.status}{#if uploading}&nbsp;{Math.round((uploader.progress ?? 0) * 100)}%{/if}
-							</span>
+							{#if filtering && item.folderId && item.folderId !== currentId}
+								<a class="path" href={folderHref(item.folderId)}
+									>{pathLabel(folders, item.folderId)}</a
+								>
+							{/if}
+							<span class="status-{item.status}">{statusText(item, uploading)}</span>
 							<span class="by">by {item.uploadedBy}</span>
 						</div>
-						{#if item.status !== 'uploading' && item.status !== 'downloading'}
+						{#if item.status !== 'uploading' && item.status !== 'downloading' && !item.rawDeleted}
 							<!-- eslint-disable svelte/no-navigation-without-resolve -- API host, not an app route -->
 							<a
 								class="btn-icon edit"
@@ -306,7 +629,7 @@
 						{#if item.status === 'ready'}
 							<button
 								class="btn-round"
-								title={watched ? `Resume from ${formatTime(watched)}` : 'Watch together'}
+								title={watchedAt ? `Resume from ${formatTime(watchedAt)}` : 'Watch together'}
 								onclick={() => watch(item)}
 							>
 								<Play size={14} fill="currentColor" />
@@ -316,13 +639,20 @@
 				</li>
 			{/each}
 		</ul>
+	{:else if loaded && !error && filtering}
+		<div class="panel empty-state">
+			<Search size={40} />
+			<p>Nothing matches.</p>
+			<button class="btn btn-outline" onclick={clearFilters}>Clear filters</button>
+		</div>
 	{:else if loaded && !error}
 		<div class="panel empty-state">
 			<Film size={40} />
 			<p>{current ? 'This folder is empty.' : 'The library is empty.'}</p>
 			<p class="muted">
-				Upload a file, add a torrent or import an .m3u8 link{current ? ' into this folder' : ''}, or
-				create folders for a series and its seasons.
+				Upload a file (or drop it here), add a torrent or import an .m3u8 link{current
+					? ' into this folder'
+					: ''}, or create folders for a series and its seasons.
 			</p>
 			<div class="empty-actions">
 				<button class="btn btn-outline" onclick={() => (folderModal = { folder: null })}>
@@ -335,6 +665,59 @@
 		</div>
 	{/if}
 </main>
+
+{#if selecting}
+	<div class="bulk-bar" role="toolbar" aria-label="Selected movies">
+		<div class="container bulk-inner">
+			<span class="meta count">{selected.size} selected</span>
+			<button class="btn btn-outline" onclick={selectAllVisible} disabled={!items.length}>
+				{items.length && items.every((m) => selected.has(m.id)) ? 'None' : 'All'}
+			</button>
+			<select
+				class="input"
+				aria-label="Move to folder"
+				bind:value={bulkTarget}
+				onchange={moveSelected}
+				disabled={!selected.size || bulkBusy}
+			>
+				<option value="" disabled>Move to…</option>
+				<option value="top">— Top level —</option>
+				{#each moveChoices as o (o.id)}
+					<option value={o.id}>{o.label}</option>
+				{/each}
+			</select>
+			<button
+				class="btn btn-outline"
+				disabled={!selected.size || bulkBusy}
+				onclick={() => bulk('reprocess')}
+			>
+				Re-process
+			</button>
+			<button
+				class="btn btn-outline"
+				disabled={!selected.size || bulkBusy}
+				onclick={() => bulk('delete_original')}
+			>
+				Delete originals
+			</button>
+			<button
+				class="btn btn-danger"
+				disabled={!selected.size || bulkBusy}
+				onclick={() => bulk('delete')}
+			>
+				Delete
+			</button>
+			<button class="btn-icon" title="Done" onclick={toggleSelecting}><X size={18} /></button>
+		</div>
+	</div>
+{/if}
+
+{#if fileDrag}
+	<div class="drop-overlay">
+		<Upload size={40} />
+		<p>Drop to upload into {current ? current.name : 'the library'}</p>
+	</div>
+{/if}
 
 <UploadModal
 	open={uploadOpen}
@@ -364,6 +747,10 @@
 />
 
 <style>
+	.with-bar {
+		padding-bottom: 6rem;
+	}
+
 	.title {
 		min-width: 0;
 	}
@@ -375,6 +762,11 @@
 		gap: 0.25rem;
 		font-size: 14px;
 		color: var(--color-muted);
+	}
+
+	.crumbs a {
+		padding: 0 0.25rem;
+		border-radius: 0.25rem;
 	}
 
 	.crumbs span {
@@ -390,7 +782,7 @@
 
 	/* every control in the toolbar shares one height */
 	.tools .btn,
-	.tools .input {
+	.filters .input {
 		height: 2.375rem;
 	}
 
@@ -398,15 +790,41 @@
 		padding: 0 1rem;
 	}
 
-	.sort {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
+	.tools .btn.active {
+		border-color: var(--color-primary);
+		color: var(--color-primary);
 	}
 
-	.sort .input {
+	.filters {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem;
+		margin: -0.75rem 0 2rem;
+	}
+
+	.filters .input {
 		width: auto;
 		padding: 0 0.75rem;
+	}
+
+	.search {
+		position: relative;
+		display: flex;
+		flex: 1 1 14rem;
+		align-items: center;
+		color: var(--color-gray);
+	}
+
+	.search :global(svg) {
+		position: absolute;
+		left: 0.75rem;
+		pointer-events: none;
+	}
+
+	.filters .search .input {
+		width: 100%;
+		padding-left: 2.25rem;
 	}
 
 	.grid {
@@ -420,6 +838,16 @@
 		flex-direction: column;
 		gap: 0.75rem;
 		min-width: 0;
+		border-radius: 0.3rem;
+	}
+
+	/* drop targets while dragging cards: the --ring outline */
+	.drop-target {
+		box-shadow: var(--ring);
+	}
+
+	.card.selected .thumb {
+		box-shadow: var(--ring);
 	}
 
 	.thumb {
@@ -467,6 +895,36 @@
 		right: 0.5rem;
 	}
 
+	.seen {
+		position: absolute;
+		bottom: 0.5rem;
+		right: 0.5rem;
+		display: flex;
+		padding: 0.2rem;
+	}
+
+	/* selection checkbox in the poster's corner */
+	.pick {
+		position: absolute;
+		top: 0.5rem;
+		left: 0.5rem;
+		z-index: 1;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.5rem;
+		height: 1.5rem;
+		border: 2px solid var(--color-text);
+		border-radius: 0.35rem;
+		background-color: rgb(0 0 0 / 0.5);
+		color: white;
+	}
+
+	.pick.on {
+		border-color: var(--color-primary);
+		background-color: var(--color-primary);
+	}
+
 	/* how far this viewer got, along the bottom of the poster */
 	.watched {
 		position: absolute;
@@ -482,7 +940,8 @@
 		background-color: var(--color-primary);
 	}
 
-	.uploading {
+	/* upload / import / transcode progress over the poster */
+	.overlay {
 		position: absolute;
 		inset: 0;
 		display: flex;
@@ -495,6 +954,21 @@
 		font-size: 13px;
 		font-weight: 700;
 		text-align: center;
+		text-transform: uppercase;
+	}
+
+	.indeterminate > div {
+		width: 30%;
+		animation: slide 1.2s ease-in-out infinite;
+	}
+
+	@keyframes slide {
+		from {
+			transform: translateX(-100%);
+		}
+		to {
+			transform: translateX(340%);
+		}
 	}
 
 	h3 {
@@ -524,11 +998,16 @@
 		min-width: 0;
 	}
 
-	.by {
+	.by,
+	.path {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		text-transform: none;
+	}
+
+	.path {
+		color: var(--color-muted);
 	}
 
 	.edit {
@@ -554,5 +1033,57 @@
 	.empty-actions {
 		display: flex;
 		gap: 0.75rem;
+	}
+
+	.bulk-bar {
+		position: fixed;
+		right: 0;
+		bottom: 0;
+		left: 0;
+		z-index: 15;
+		padding: 0.75rem 0;
+		border-top: 1px solid var(--color-border);
+		background-color: color-mix(in srgb, var(--color-secondary), transparent 5%);
+		backdrop-filter: blur(10px);
+	}
+
+	.bulk-inner {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem;
+	}
+
+	.bulk-inner .btn,
+	.bulk-inner .input {
+		height: 2.25rem;
+		padding: 0 0.9rem;
+	}
+
+	.bulk-inner .input {
+		width: auto;
+		max-width: 14rem;
+	}
+
+	.count {
+		margin-right: auto;
+		font-size: 12px;
+	}
+
+	.drop-overlay {
+		position: fixed;
+		inset: 0;
+		z-index: 30;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 1rem;
+		border: 3px dashed var(--color-primary);
+		background-color: color-mix(in srgb, var(--color-bg), transparent 15%);
+		color: var(--color-primary);
+		font-weight: 700;
+		text-transform: uppercase;
+		pointer-events: none;
 	}
 </style>

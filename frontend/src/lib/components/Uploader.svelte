@@ -10,12 +10,11 @@
 		onstarted?: () => void;
 	} = $props();
 
-	function handleFile(e: Event) {
+	function handleFiles(e: Event) {
 		const input = e.target as HTMLInputElement;
-		const file = input.files?.[0];
-		if (!file) return;
+		if (!input.files?.length) return;
 		// Errors are kept on `uploader.error` and shown in the downloads list.
-		uploader.upload(file, folderId).catch(() => {});
+		uploader.enqueue(input.files, folderId);
 		input.value = '';
 		onstarted?.();
 	}
@@ -23,20 +22,15 @@
 
 <div class="tab">
 	<label class="field">
-		<span class="label">Video file</span>
-		<input
-			type="file"
-			accept="video/*,.mkv"
-			onchange={handleFile}
-			class="input"
-			disabled={uploader.busy}
-		/>
+		<span class="label">Video files</span>
+		<input type="file" accept="video/*,.mkv" multiple onchange={handleFiles} class="input" />
 	</label>
 	<p class="muted">
 		{#if uploader.busy}
-			Wait for "{uploader.filename}" to finish uploading first.
+			"{uploader.filename}" is uploading; new files wait their turn.
 		{:else}
-			Uploads go straight to storage in 64 MB parts. Progress shows in the library.
+			Uploads go straight to storage in 64 MB parts, one file at a time. You can also drop files
+			onto the library. Progress shows there.
 		{/if}
 	</p>
 </div>

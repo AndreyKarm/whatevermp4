@@ -2,17 +2,41 @@ import type { ChatMessage, RoomIn, RoomMember, RoomOut, RoomState } from './type
 
 // The backend closes with 1008 (policy violation) when the room doesn't exist or was deleted.
 const CLOSE_ROOM_GONE = 1008;
+// ...and with 4003 when a private room is joined without a valid invite code.
+const CLOSE_INVITE_REQUIRED = 4003;
+
+const INVITE_PREFIX = 'room-invite:';
+
+/** The invite code remembered for a private room in this browser. */
+export function savedInvite(roomId: string): string | null {
+	try {
+		return localStorage.getItem(INVITE_PREFIX + roomId);
+	} catch {
+		return null;
+	}
+}
+
+export function saveInvite(roomId: string, code: string) {
+	try {
+		localStorage.setItem(INVITE_PREFIX + roomId, code);
+	} catch {
+		/* storage unavailable: the link has to be opened again */
+	}
+}
 
 export class RoomSocket {
 	state = $state<RoomState | null>(null);
 	owner = $state('');
 	everyone = $state(false);
+	controllers = $state<string[]>([]);
 	members = $state<RoomMember[]>([]);
 	chat = $state<ChatMessage[]>([]);
 	isHolding = $state(false);
 	connected = $state(false);
 	/** Set when the room is gone; no reconnect is attempted. */
 	fatal = $state<string | null>(null);
+	/** Set when a private room refused us: a password or invite link is needed. */
+	locked = $state(false);
 	/** Last transient error from the server (e.g. not allowed to control). */
 	error = $state<string | null>(null);
 
@@ -21,19 +45,27 @@ export class RoomSocket {
 	#nickname: string;
 	#roomId: string;
 	#apiUrl: string;
+	#invite: string | null;
 	#pingTimer: ReturnType<typeof setInterval> | null = null;
 	#retryTimer: ReturnType<typeof setTimeout> | null = null;
 	#retries = 0;
 	#closed = false;
 
-	constructor(roomId: string, nickname: string, apiUrl: string) {
+	constructor(roomId: string, nickname: string, apiUrl: string, invite: string | null = null) {
 		this.#roomId = roomId;
 		this.#nickname = nickname;
 		this.#apiUrl = apiUrl;
+		this.#invite = invite;
 	}
 
 	get canControl() {
-		return this.everyone || this.owner === this.#nickname;
+		return (
+			this.everyone || this.owner === this.#nickname || this.controllers.includes(this.#nickname)
+		);
+	}
+
+	get queue(): string[] {
+		return this.state?.queue ?? [];
 	}
 
 	serverNow() {
@@ -48,7 +80,8 @@ export class RoomSocket {
 
 	connect() {
 		this.#closed = false;
-		const url = `${this.#apiUrl.replace(/^http/, 'ws')}/api/rooms/${this.#roomId}/ws?nickname=${encodeURIComponent(this.#nickname)}`;
+		const invite = this.#invite ? `&invite=${encodeURIComponent(this.#invite)}` : '';
+		const url = `${this.#apiUrl.replace(/^http/, 'ws')}/api/rooms/${this.#roomId}/ws?nickname=${encodeURIComponent(this.#nickname)}${invite}`;
 		const ws = new WebSocket(url);
 		this.#ws = ws;
 
@@ -67,6 +100,10 @@ export class RoomSocket {
 			if (this.#closed) return;
 			if (e.code === CLOSE_ROOM_GONE) {
 				this.fatal = e.reason || 'room not found';
+				return;
+			}
+			if (e.code === CLOSE_INVITE_REQUIRED) {
+				this.locked = true;
 				return;
 			}
 			const delay = Math.min(1000 * 2 ** this.#retries++, 10_000);
@@ -101,6 +138,7 @@ export class RoomSocket {
 				this.isHolding = msg.holding ?? false;
 				this.owner = msg.owner ?? '';
 				this.everyone = msg.everyone ?? false;
+				this.controllers = msg.controllers ?? [];
 				break;
 			case 'members':
 				this.members = msg.members ?? [];

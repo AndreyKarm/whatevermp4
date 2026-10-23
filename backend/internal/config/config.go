@@ -18,6 +18,8 @@ type Config struct {
 	WorkDir          string
 	AllowedOrigins   []string
 	PlaybackSecret   string
+	HWEncoder        string // worker: "nvenc" or "none"
+	WorkerAddr       string // worker: /healthz and /metrics
 }
 
 func get(k, def string) string {
@@ -54,6 +56,8 @@ func Load() Config {
 		WorkDir:          get("WORK_DIR", "/tmp/work"),
 		AllowedOrigins:   splitCSV(get("ALLOWED_ORIGINS", "http://localhost:5173")),
 		PlaybackSecret:   get("PLAYBACK_SECRET", DefaultPlaybackSecret),
+		HWEncoder:        get("HW_ENCODER", "none"),
+		WorkerAddr:       get("WORKER_ADDR", ":8089"),
 	}
 }
 

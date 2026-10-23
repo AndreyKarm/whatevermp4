@@ -5,6 +5,7 @@ import (
 	"errors"
 	"liotom/whateverserver/internal/jobs"
 	"liotom/whateverserver/internal/storage"
+	"log"
 	"net/http"
 	"path"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type MediaItem struct {
@@ -31,6 +33,11 @@ type MediaItem struct {
 	AudioTracks    json.RawMessage `json:"audioTracks"`
 	SubtitleTracks json.RawMessage `json:"subtitleTracks"`
 	Fonts          json.RawMessage `json:"fonts"`
+	Thumbnails     json.RawMessage `json:"thumbnails,omitempty"` // timeline sprites, see transcode.Thumbnails
+	Progress       *float64        `json:"progress,omitempty"`   // 0..1 while downloading/processing
+	RawBytes       *int64          `json:"rawBytes,omitempty"`
+	HLSBytes       *int64          `json:"hlsBytes,omitempty"`
+	RawDeleted     bool            `json:"rawDeleted,omitempty"`
 	Error          *string         `json:"error,omitempty"`
 	CreatedAt      time.Time       `json:"createdAt"`
 }
@@ -47,14 +54,16 @@ func (o *opt[T]) UnmarshalJSON(b []byte) error {
 }
 
 const mediaColumns = `id, uploaded_by, torrent_id, folder_id, filename, status, hls_key, poster_key,
-	duration_sec, season, episode, audio_tracks, subtitle_tracks, fonts, error, created_at`
+	duration_sec, season, episode, audio_tracks, subtitle_tracks, fonts, thumbnails, progress,
+	raw_bytes, hls_bytes, raw_deleted, error, created_at`
 
 // scan reads a row selected with mediaColumns.
 func (m *MediaItem) scan(row pgx.Row) error {
 	return row.Scan(
 		&m.ID, &m.UploadedBy, &m.TorrentID, &m.FolderID, &m.Filename, &m.Status,
 		&m.HLSKey, &m.PosterKey, &m.DurationSec, &m.Season, &m.Episode,
-		&m.AudioTracks, &m.SubtitleTracks, &m.Fonts, &m.Error, &m.CreatedAt,
+		&m.AudioTracks, &m.SubtitleTracks, &m.Fonts, &m.Thumbnails, &m.Progress,
+		&m.RawBytes, &m.HLSBytes, &m.RawDeleted, &m.Error, &m.CreatedAt,
 	)
 }
 
@@ -160,9 +169,10 @@ func (s *Server) updateMedia(w http.ResponseWriter, r *http.Request) {
 func (s *Server) downloadMedia(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var filename, rawKey, status string
+	var rawDeleted bool
 	err := s.db.QueryRow(r.Context(),
-		`SELECT filename, raw_key, status FROM media_files WHERE id=$1`, id).
-		Scan(&filename, &rawKey, &status)
+		`SELECT filename, raw_key, status, raw_deleted FROM media_files WHERE id=$1`, id).
+		Scan(&filename, &rawKey, &status, &rawDeleted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeErr(w, http.StatusNotFound, "media not found")
 		return
@@ -173,6 +183,10 @@ func (s *Server) downloadMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	if status == "uploading" || status == "downloading" {
 		writeErr(w, http.StatusConflict, "the original file isn't stored yet")
+		return
+	}
+	if rawDeleted {
+		writeErr(w, http.StatusConflict, errOriginalDeleted)
 		return
 	}
 	// keep the stored container's extension (e.g. imports are .mkv)
@@ -187,40 +201,173 @@ func (s *Server) downloadMedia(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, u, http.StatusFound)
 }
 
+const errOriginalDeleted = "the original file was deleted"
+
 // POST /api/media/{id}/reprocess re-runs the transcode from the stored original.
 func (s *Server) reprocessMedia(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	tag, err := s.db.Exec(r.Context(), `
-		UPDATE media_files SET status='processing', error=NULL
-		WHERE id=$1 AND status IN ('ready','failed')`, id)
+	ids, err := s.reprocess(r, []string{id})
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if tag.RowsAffected() == 0 {
-		writeErr(w, http.StatusConflict, "media not found or still being prepared")
-		return
-	}
-	if err := jobs.Enqueue(r.Context(), s.db, "process", map[string]string{"mediaId": id}); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+	if len(ids) == 0 {
+		writeErr(w, http.StatusConflict, "media not found, still being prepared, or its original was deleted")
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// reprocess queues a transcode for the given media that are ready or failed
+// and still have their original; it returns the IDs it queued.
+func (s *Server) reprocess(r *http.Request, ids []string) ([]string, error) {
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(r.Context())
+	rows, err := tx.Query(r.Context(), `
+		UPDATE media_files SET status='processing', error=NULL, progress=NULL
+		WHERE id = ANY($1) AND status IN ('ready','failed') AND NOT raw_deleted
+		RETURNING id`, ids)
+	if err != nil {
+		return nil, err
+	}
+	queued, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range queued {
+		if err := jobs.Enqueue(r.Context(), tx, "process", map[string]string{"mediaId": id}); err != nil {
+			return nil, err
+		}
+	}
+	return queued, tx.Commit(r.Context())
+}
+
 func (s *Server) deleteMedia(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	var rawKey string
-	err := s.db.QueryRow(r.Context(),
-		`DELETE FROM media_files WHERE id=$1 RETURNING raw_key`, id).Scan(&rawKey)
-	if errors.Is(err, pgx.ErrNoRows) {
+	n, err := s.deleteMediaRows(r, []string{id})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if n == 0 {
 		writeErr(w, http.StatusNotFound, "media not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteMediaRows deletes the rows and everything stored for them.
+func (s *Server) deleteMediaRows(r *http.Request, ids []string) (int, error) {
+	rows, err := s.db.Query(r.Context(),
+		`DELETE FROM media_files WHERE id = ANY($1) RETURNING id, raw_key`, ids)
+	if err != nil {
+		return 0, err
+	}
+	var gone [][2]string
+	for rows.Next() {
+		var id, rawKey string
+		if err := rows.Scan(&id, &rawKey); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		gone = append(gone, [2]string{id, rawKey})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, g := range gone {
+		s.st.DeleteMedia(r.Context(), g[0], g[1])
+	}
+	return len(gone), nil
+}
+
+// POST /api/media/{id}/delete-original frees the space of a ready movie's
+// original upload. It still plays; download and re-process stop working.
+func (s *Server) deleteOriginal(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	n, err := s.deleteOriginals(r, []string{id})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if n == 0 {
+		writeErr(w, http.StatusConflict, "media not found, not ready, or its original is already gone")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteOriginals marks ready media's originals deleted, then removes them
+// from S3. Marking first means a failed S3 delete leaves an orphan object
+// rather than a row pointing at a missing file.
+func (s *Server) deleteOriginals(r *http.Request, ids []string) (int, error) {
+	rows, err := s.db.Query(r.Context(), `
+		UPDATE media_files SET raw_deleted=true, raw_bytes=0
+		WHERE id = ANY($1) AND status='ready' AND NOT raw_deleted
+		RETURNING raw_key`, ids)
+	if err != nil {
+		return 0, err
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return 0, err
+	}
+	for _, k := range keys {
+		if err := s.st.DeleteKey(r.Context(), k); err != nil {
+			log.Printf("delete original %s: %v", k, err)
+		}
+	}
+	return len(keys), nil
+}
+
+// POST /api/media/bulk {ids, action, folderId?}: one action on many media.
+// action: move (folderId, null = top level) | delete | reprocess | delete_original.
+// Media the action doesn't apply to (e.g. not ready) are skipped.
+func (s *Server) bulkMedia(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		IDs      []string `json:"ids"`
+		Action   string   `json:"action"`
+		FolderID *string  `json:"folderId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if len(in.IDs) == 0 || len(in.IDs) > 1000 {
+		writeErr(w, http.StatusBadRequest, "ids must list 1-1000 media")
+		return
+	}
+	var done int
+	var err error
+	switch in.Action {
+	case "move":
+		var tag pgconn.CommandTag
+		tag, err = s.db.Exec(r.Context(),
+			`UPDATE media_files SET folder_id=$2 WHERE id = ANY($1)`, in.IDs, emptyToNil(in.FolderID))
+		if isForeignKeyViolation(err) {
+			writeErr(w, http.StatusBadRequest, "folder not found")
+			return
+		}
+		done = int(tag.RowsAffected())
+	case "delete":
+		done, err = s.deleteMediaRows(r, in.IDs)
+	case "reprocess":
+		var ids []string
+		ids, err = s.reprocess(r, in.IDs)
+		done = len(ids)
+	case "delete_original":
+		done, err = s.deleteOriginals(r, in.IDs)
+	default:
+		writeErr(w, http.StatusBadRequest, "action must be move, delete, reprocess or delete_original")
 		return
 	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.st.DeleteMedia(r.Context(), id, rawKey)
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, map[string]int{"done": done, "skipped": len(in.IDs) - done})
 }
