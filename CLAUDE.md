@@ -5,8 +5,9 @@ Self-hosted watch-party app. Users upload videos (or add torrents); a worker tra
 ## Layout
 
 ```
-docker-compose.yml   full stack: rustfs (S3), postgres, movie (API), worker, web
+docker-compose.yml   full stack: rustfs (S3), postgres, movie (API), worker, web, proxy (HTTPS)
 docker-compose.nvidia.yml  override: worker encodes with NVENC on an NVIDIA GPU
+proxy/               nginx.conf + entrypoint.sh: TLS in front of web+API (1488) and S3 (9044), certs fetched from CERTS_URL
 .env.example         compose variables (copy to .env)
 backend/             Go module `liotom/whateverserver`
   Dockerfile         targets `api` (Alpine) and `worker` (Debian: its ffmpeg has h264_nvenc, Alpine's doesn't)
@@ -96,7 +97,7 @@ With GPU transcoding (NVIDIA Container Toolkit; on Windows, Docker Desktop with 
 docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up --build
 ```
 
-Ports: web 3000, API 8088, RustFS S3 9044 (console 9045), Postgres 5432. The worker's 8089 isn't published.
+Ports: the `proxy` (nginx) serves `https://$PUBLIC_HOST:1488` (web, with `/api` and `/play` routed to the API, so `PUBLIC_API_URL` is the same origin) and S3 at `https://$PUBLIC_HOST:9044` (`S3_PUBLIC_ENDPOINT`; presigned URLs sign the Host, so nginx forwards `$http_host` with its port). It downloads `fullchain.pem`/`privkey.pem` from `CERTS_URL` at start and every `CERTS_REFRESH` seconds, reloading on change. Also published: API 8088 (plain HTTP), RustFS console 9045, Postgres 5432. The worker's 8089 isn't published.
 
 The schema is created and upgraded by the binaries at startup (see Migrations), on fresh and existing volumes alike. To change it: edit `schema.ts`, run `pnpm db:generate` (writes the next `backend/migrations/NNNN_*.sql` and the journal; it needs `DATABASE_URL` set but doesn't connect), append hand-written SQL such as triggers to that file, and restart. Don't edit a migration that has already been applied anywhere; add a new one. A new table that pages should follow needs its own `*_notify` trigger appended to its migration by hand. `pnpm db:push` is only for throwaway dev databases: it bypasses `schema_migrations`, so the runner would later try to re-apply those changes.
 

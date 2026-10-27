@@ -3,8 +3,8 @@ services:
     image: rustfs/rustfs:latest
     container_name: movie-rustfs
     restart: unless-stopped
+    # S3 is published over HTTPS by the proxy (9044); 9045 is the plain-HTTP admin console
     ports:
-      - "9044:9000"
       - "9045:9001"
     environment:
       RUSTFS_VOLUMES: /data
@@ -13,8 +13,15 @@ services:
       RUSTFS_CONSOLE_ENABLE: "true"
       RUSTFS_ACCESS_KEY: "movies"
       RUSTFS_SECRET_KEY: "ea0645717277d39c703a7086efef9271e253860d585c95e8f5d79d265f2bd88a"
+      # No in-memory object cache: HLS files are read once per viewer through the API anyway
+      RUSTFS_OBJECT_DATA_CACHE_ENABLE: "false"
     volumes:
       - movies_data:/data
+    # RustFS sizes its buffers from the cgroup limit
+    deploy:
+      resources:
+        limits:
+          memory: 500M
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/health"]
       interval: 5s
@@ -56,14 +63,14 @@ services:
       ADDR: :8088
       DATABASE_URL: postgres://movieuser:ea0645717277d39c703a7086efef9271e253860d585c95e8f5d79d265f2bd88a@db:5432/local?sslmode=disable
       S3_ENDPOINT: http://rustfs:9000
-      S3_PUBLIC_ENDPOINT: http://192.168.196.32:9044
+      S3_PUBLIC_ENDPOINT: https://${PUBLIC_HOST:-movie.zero.catboy.fyi}:9044
       S3_REGION: us-east-1
       S3_BUCKET: movies
       S3_ACCESS_KEY: movies
       S3_SECRET_KEY: ea0645717277d39c703a7086efef9271e253860d585c95e8f5d79d265f2bd88a
       WORK_DIR: /tmp/work
       PLAYBACK_SECRET: 5a1f7593442279cd773638b37957b2bdf6b7cde811ef3302890de13ff6813f0c
-      ALLOWED_ORIGINS: http://192.168.196.32:3000,http://localhost:3000,http://127.0.0.1:3000,http://192.168.196.32:5173,http://localhost:5173
+      ALLOWED_ORIGINS: https://${PUBLIC_HOST:-movie.zero.catboy.fyi}:1488,http://localhost:5173
     ports:
       - "8088:8088"
     healthcheck:
@@ -90,7 +97,7 @@ services:
     environment:
       DATABASE_URL: postgres://movieuser:ea0645717277d39c703a7086efef9271e253860d585c95e8f5d79d265f2bd88a@db:5432/local?sslmode=disable
       S3_ENDPOINT: http://rustfs:9000
-      S3_PUBLIC_ENDPOINT: http://192.168.196.32:9044
+      S3_PUBLIC_ENDPOINT: https://${PUBLIC_HOST:-movie.zero.catboy.fyi}:9044
       S3_REGION: us-east-1
       S3_BUCKET: movies
       S3_ACCESS_KEY: movies
@@ -122,19 +129,43 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://movieuser:ea0645717277d39c703a7086efef9271e253860d585c95e8f5d79d265f2bd88a@db:5432/local
-      ORIGIN: http://192.168.196.32:3000
+      ORIGIN: https://${PUBLIC_HOST:-movie.zero.catboy.fyi}:1488
       BACKEND_URL: http://movie:8088
-      PUBLIC_API_URL: http://192.168.196.32:8088
+      # Same origin as the pages: the proxy routes /api and /play to the API
+      PUBLIC_API_URL: https://${PUBLIC_HOST:-movie.zero.catboy.fyi}:1488
       BODY_SIZE_LIMIT: 10G
-    ports:
-      - "3000:3000"
+    # Published over HTTPS by the proxy (1488)
+    expose:
+      - "3000"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000 || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 5
 
+  # HTTPS for the app (1488: web + API) and S3 (9044), with certificates downloaded from CERTS_URL
+  proxy:
+    image: nginx:1.28.0-alpine
+    container_name: movie-proxy
+    restart: unless-stopped
+    entrypoint: ["sh", "/entrypoint.sh"]
+    depends_on:
+      - web
+      - movie
+      - rustfs
+    environment:
+      CERTS_URL: ${CERTS_URL:-https://ssl.zero.catboy.fyi}
+      CERTS_REFRESH: ${CERTS_REFRESH:-21600}
+    volumes:
+      - ./proxy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./proxy/entrypoint.sh:/entrypoint.sh:ro
+      - proxy_certs:/certs
+    ports:
+      - "1488:443"
+      - "9044:9443"
+
 volumes:
   pgdata:
   movies_data:
   worker_work:
+  proxy_certs:
