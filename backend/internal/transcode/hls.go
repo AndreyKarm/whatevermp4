@@ -28,34 +28,58 @@ func tail(s string, n int) string {
 }
 
 // Lower renditions added under the source so each viewer can pick a quality.
-var ladder = []struct{ height, maxRateK int }{
-	{1080, 5000}, {720, 2800}, {480, 1400}, {360, 800},
+// Each is a 16:9 box the frame is fitted into, so 720p of a 21:9 movie is
+// 1280x534, not 1680x720.
+var ladder = []struct{ width, height, maxRateK int }{
+	{1920, 1080, 5000}, {1280, 720, 2800}, {854, 480, 1400}, {640, 360, 800},
 }
 
 const maxExtraRenditions = 2
 
+// The usual names; a frame within 7% of one gets it (1904x800, 1920x1088,
+// DCI 4096x2160), so such a source doesn't get a near-identical rung as well.
+var qualityTiers = []int{4320, 2160, 1440, 1080, 720, 480, 360, 240, 144}
+
+// qualityHeight is the "720p" number of a frame: the height of the 16:9 frame
+// it matches, whatever its shape. 1280x546 (21:9) and 720x1280 (portrait) are
+// both 720p. frontend/src/lib/quality.ts does the same for the quality picker.
+func qualityHeight(w, h int) int {
+	q := max(min(w, h), max(w, h)*9/16)
+	for _, t := range qualityTiers {
+		if q*100 >= t*93 && q*100 <= t*107 {
+			return t
+		}
+	}
+	return q
+}
+
 type variant struct {
-	name     string
-	height   int // 0: keep the source size
-	copy     bool
-	maxRateK int // 0: no cap (CRF only)
+	name          string
+	width, height int // box the frame is fitted into; 0: keep the source size
+	copy          bool
+	maxRateK      int // 0: no cap (CRF only)
 }
 
 // variants returns the source quality first, then up to maxExtraRenditions
 // ladder steps below it.
 func variants(p *Plan) []variant {
-	name := "src"
-	if p.VideoHeight > 0 {
-		name = fmt.Sprintf("%dp", p.VideoHeight)
+	if p.VideoWidth == 0 || p.VideoHeight == 0 {
+		return []variant{{name: "src", copy: p.VideoCopy}}
 	}
-	vs := []variant{{name: name, copy: p.VideoCopy}}
+	q := qualityHeight(p.VideoWidth, p.VideoHeight)
+	vs := []variant{{name: fmt.Sprintf("%dp", q), copy: p.VideoCopy}}
 	for _, l := range ladder {
-		if len(vs) > maxExtraRenditions || p.VideoHeight == 0 {
+		if len(vs) > maxExtraRenditions {
 			break
 		}
-		if l.height < p.VideoHeight {
-			vs = append(vs, variant{name: fmt.Sprintf("%dp", l.height), height: l.height, maxRateK: l.maxRateK})
+		if l.height >= q {
+			continue
 		}
+		v := variant{name: fmt.Sprintf("%dp", l.height), width: l.width, height: l.height, maxRateK: l.maxRateK}
+		if p.VideoHeight > p.VideoWidth {
+			v.width, v.height = l.height, l.width
+		}
+		vs = append(vs, v)
 	}
 	return vs
 }

@@ -30,10 +30,11 @@ type SubTrack struct {
 type Plan struct {
 	VideoIndex  int
 	VideoCopy   bool
-	VideoHeight int // 0 if ffprobe didn't report it
-	Audio      []AudioTrack
-	Subs       []SubTrack
-	Duration   float64
+	VideoWidth  int // as displayed (rotation applied); 0 if ffprobe didn't report it
+	VideoHeight int
+	Audio       []AudioTrack
+	Subs        []SubTrack
+	Duration    float64
 }
 
 var safe = regexp.MustCompile(`[^a-z0-9]+`)
@@ -57,7 +58,7 @@ func BuildPlan(p *ProbeResult) (*Plan, error) {
 				continue
 			}
 			plan.VideoIndex = s.Index
-			plan.VideoHeight = s.Height
+			plan.VideoWidth, plan.VideoHeight = s.displaySize()
 			// Browser-safe: 8-bit H.264 only. Everything else gets re-encoded.
 			plan.VideoCopy = s.CodecName == "h264" && (s.PixFmt == "yuv420p" || s.PixFmt == "yuvj420p")
 		case "audio":

@@ -14,20 +14,21 @@
 	import type { MediaItem } from '#lib/types.ts';
 	import type { RoomSocket } from '#lib/room.svelte.ts';
 	import { saveProgress } from '#lib/progress.ts';
+	import { qualityHeight } from '#lib/quality.ts';
 	import { formatTime as fmt } from '#lib/time.ts';
 
 	let { item, room, apiUrl }: { item: MediaItem; room: RoomSocket; apiUrl: string } = $props();
 
 	const BACK = 5;
 	const FORWARD = 10;
-	// Preferred quality as a height ("720") or "auto", per viewer.
+	// Preferred quality as a qualityHeight ("720") or "auto", per viewer.
 	const QUALITY_KEY = 'quality';
 
 	let hls: Hls | null = null;
 	// Renditions hls.js found, best first; selecting one only affects this viewer.
-	let levels = $state<{ index: number; height: number }[]>([]);
+	let levels = $state<{ index: number; height: number }[]>([]); // height: qualityHeight
 	let quality = $state(-1); // level index, -1 = auto
-	let playingHeight = $state(0); // what auto picked
+	let playingHeight = $state(0); // what auto picked (qualityHeight)
 	// Only save the position once this viewer has really played something,
 	// so the initial 0:00 never overwrites a saved spot.
 	let hasPlayed = false;
@@ -68,7 +69,7 @@
 			hls = h;
 			h.on(Hls.Events.MANIFEST_PARSED, () => {
 				levels = h.levels
-					.map((l, index) => ({ index, height: l.height }))
+					.map((l, index) => ({ index, height: qualityHeight(l.width, l.height) }))
 					.sort((a, b) => b.height - a.height);
 				const preferred = readQuality();
 				const match = levels.find((l) => l.height === preferred);
@@ -78,7 +79,8 @@
 				}
 			});
 			h.on(Hls.Events.LEVEL_SWITCHED, (_, data) => {
-				playingHeight = h.levels[data.level]?.height ?? 0;
+				const level = h.levels[data.level];
+				playingHeight = level ? qualityHeight(level.width, level.height) : 0;
 			});
 			// hls.js stops on fatal errors; network and media errors are usually
 			// recoverable (a dropped connection, a decoder hiccup).

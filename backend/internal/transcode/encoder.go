@@ -48,11 +48,13 @@ func Detect(ctx context.Context, enc Encoder) Encoder {
 func (e Encoder) videoArgs(i int, v variant, keyframes string) []string {
 	o := func(name string) string { return fmt.Sprintf("-%s:v:%d", name, i) }
 	var args []string
-	filter := "format=yuv420p"
+	// 4:2:0 needs even sizes: libx264 refuses an odd one like 1279x545.
+	size := "crop=trunc(iw/2)*2:trunc(ih/2)*2"
 	if v.height > 0 {
-		filter = fmt.Sprintf("scale=-2:%d,%s", v.height, filter)
+		size = fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease:force_divisible_by=2",
+			v.width, v.height)
 	}
-	args = append(args, o("filter"), filter)
+	args = append(args, o("filter"), size+",format=yuv420p")
 	if v.maxRateK > 0 {
 		args = append(args,
 			o("maxrate"), fmt.Sprintf("%dk", v.maxRateK),

@@ -12,10 +12,25 @@ type Stream struct {
 	CodecType   string            `json:"codec_type"`
 	Profile     string            `json:"profile"`
 	PixFmt      string            `json:"pix_fmt"`
+	Width       int               `json:"width"`
 	Height      int               `json:"height"`
 	Channels    int               `json:"channels"`
 	Tags        map[string]string `json:"tags"`
 	Disposition map[string]int    `json:"disposition"`
+	SideData    []struct {
+		Rotation float64 `json:"rotation"`
+	} `json:"side_data_list"`
+}
+
+// displaySize is the frame size as shown. Phones store portrait video as
+// landscape plus a rotation, which ffmpeg applies when it encodes.
+func (s Stream) displaySize() (w, h int) {
+	for _, d := range s.SideData {
+		if int(d.Rotation)%180 != 0 {
+			return s.Height, s.Width
+		}
+	}
+	return s.Width, s.Height
 }
 
 type ProbeResult struct {
